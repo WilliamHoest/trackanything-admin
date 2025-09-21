@@ -7,6 +7,7 @@ load_dotenv()
 class Settings(BaseSettings):
     supabase_url: str
     supabase_key: str
+    database_url: str = ""  # PostgreSQL connection string
     host: str = "0.0.0.0"
     port: int = 8000
     debug: bool = True

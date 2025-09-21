@@ -1,23 +1,31 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 
 class TopicBase(BaseModel):
-    title: str
-    description: Optional[str] = None
+    name: str
+    is_active: bool = True
 
 class TopicCreate(TopicBase):
-    pass
+    keyword_ids: List[int] = []
 
 class TopicUpdate(BaseModel):
-    title: Optional[str] = None
-    description: Optional[str] = None
+    name: Optional[str] = None
+    is_active: Optional[bool] = None
+    keyword_ids: Optional[List[int]] = None
 
 class TopicResponse(TopicBase):
-    id: str
-    user_id: str
+    id: int
+    brand_id: int
     created_at: datetime
-    updated_at: Optional[datetime] = None
     
     class Config:
         from_attributes = True
+
+# For nested responses
+class TopicWithKeywords(TopicResponse):
+    keywords: List["KeywordResponse"] = []
+
+# Import needed for forward reference
+from app.schemas.keyword import KeywordResponse
+TopicWithKeywords.model_rebuild()
