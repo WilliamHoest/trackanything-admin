@@ -1,9 +1,11 @@
 import requests
 import feedparser
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import urljoin, urlparse, urlunparse, quote_plus
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict
+from dateutil import parser as dateparser
+from app.core.config import settings
 
 # Politiken scraper
 BASE_URL = "https://politiken.dk"
@@ -133,6 +135,140 @@ def crawl_dr(keywords, max_articles=50):
     return articles
 
 # Helper functions
+def clean_keywords(keywords):
+    """Clean keywords by removing dots and commas"""
+    return [kw.replace(".", "").replace(",", "").strip() for kw in keywords]
+
+# GNews scraper
+def fetch_gnews_articles(keywords: List[str]) -> List[Dict]:
+    """
+    Fetch articles from GNews API based on keywords
+    """
+    if not settings.gnews_api_key:
+        print("❌ GNEWS_API_KEY is not set.")
+        return []
+    
+    cleaned = clean_keywords(keywords)
+    query = quote_plus(" OR ".join(cleaned))
+    url = f"https://gnews.io/api/v4/search?q={query}&token={settings.gnews_api_key}&lang=da&max=10"
+    
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            print(f"❌ GNews fetch failed: {response.status_code}")
+            return []
+        
+        articles = response.json().get("articles", [])
+        entries = []
+        since = datetime.now(timezone.utc) - timedelta(hours=24)   # timezone-aware
+        
+        for a in articles:
+            if "url" not in a:
+                continue
+            try:
+                published_at = a.get("publishedAt")
+                parsed = dateparser.parse(published_at) if published_at else datetime.now(timezone.utc)
+                
+                # Ensure UTC-aware
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                else:
+                    parsed = parsed.astimezone(timezone.utc)
+                
+                if parsed < since:
+                    continue
+                
+                entries.append({
+                    "title": a.get("title", "Uden titel"),
+                    "link": a["url"],
+                    "published_parsed": parsed.timetuple(),
+                    "platform": "GNews"
+                })
+                print(f"🔍 GNews match: {a.get('title', 'Uden titel')} ({a['url']})")
+            except Exception as e:
+                print(f"⚠️ Kunne ikke parse GNews artikel: {a} – {e}")
+        
+        return entries
+        
+    except Exception as e:
+        print(f"❌ GNews request failed: {e}")
+        return []
+
+def batch_fetch_gnews_articles(keywords: List[str], batch_size: int = 10) -> List[Dict]:
+    """
+    Fetch GNews articles in batches to handle large keyword lists
+    """
+    all_articles = []
+    for i in range(0, len(keywords), batch_size):
+        batch = keywords[i:i + batch_size]
+        articles = fetch_gnews_articles(batch)
+        all_articles.extend(articles)
+    return all_articles
+
+# SerpAPI scraper
+def fetch_serpapi_articles(keywords: List[str]) -> List[Dict]:
+    """
+    Fetch articles from SerpAPI based on keywords
+    """
+    if not settings.serpapi_key:
+        print("❌ SERPAPI_KEY is not set.")
+        return []
+    
+    cleaned = clean_keywords(keywords)
+    query = " OR ".join(cleaned)
+    url = "https://serpapi.com/search"
+    params = {
+        "q": query,
+        "engine": "google_news",
+        "hl": "da",
+        "gl": "dk",
+        "api_key": settings.serpapi_key
+    }
+    
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        if response.status_code != 200:
+            print(f"❌ SerpAPI fetch failed: {response.status_code}")
+            return []
+        
+        data = response.json()
+        entries = []
+        since = datetime.now(timezone.utc) - timedelta(hours=24)
+        
+        for item in data.get("news_results", []):
+            if "title" in item and "link" in item and "date" in item:
+                try:
+                    raw_date = item["date"].replace(", +0000 UTC", "")
+                    parsed = dateparser.parse(raw_date)
+                    
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                    else:
+                        parsed = parsed.astimezone(timezone.utc)
+                    
+                    if parsed < since:
+                        continue
+                    
+                    entry = {
+                        "title": item["title"],
+                        "link": item["link"],
+                        "published_parsed": parsed.timetuple(),
+                        "platform": "SerpApi"
+                    }
+                    entries.append(entry)
+                    print(f"🔎 SerpAPI match: {item['title']} ({item['link']})")
+                except Exception as e:
+                    print(f"⚠️ Kunne ikke parse artikel: {raw_date} – {e}")
+            else:
+                print(f"⚠️ Ugyldigt SerpAPI-resultat (mangler felt): {item}")
+        
+        return entries
+        
+    except Exception as e:
+        print(f"❌ SerpAPI request failed: {e}")
+        return []
+
+# Helper functions
 def normalize_url(url):
     """Normalize URL by removing query parameters and fragments"""
     parsed = urlparse(url)
@@ -154,6 +290,16 @@ def fetch_all_mentions(keywords: List[str]) -> List[Dict]:
     Fetch all mentions from different sources and deduplicate
     """
     all_mentions = []
+    
+    # Fetch from GNews
+    print(f"🔍 Fetching from GNews with keywords: {keywords}")
+    gnews_articles = batch_fetch_gnews_articles(keywords)
+    all_mentions.extend(gnews_articles)
+    
+    # Fetch from SerpAPI
+    print(f"🔍 Fetching from SerpAPI with keywords: {keywords}")
+    serpapi_articles = fetch_serpapi_articles(keywords)
+    all_mentions.extend(serpapi_articles)
     
     # Fetch from Politiken
     print(f"🔍 Fetching from Politiken with keywords: {keywords}")

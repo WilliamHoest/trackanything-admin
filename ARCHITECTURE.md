@@ -26,8 +26,10 @@ app/
 │   └── endpoints/             # Individual endpoint implementations
 │       ├── brands.py          # Brand management endpoints
 │       ├── topics.py          # Topic/keyword management
+│       ├── keywords.py        # Keyword CRUD operations
+│       ├── mentions.py        # Mention management og viewing
 │       ├── users.py           # Authentication endpoints
-│       ├── scraping.py        # Scraping functionality
+│       ├── scraping.py        # Scraping functionality (GNews, SerpAPI, Politiken, DR)
 │       ├── digests.py         # Digest generation
 │       └── chat.py            # AI chat functionality
 ├── core/
@@ -50,7 +52,7 @@ app/
 ├── services/
 │   ├── ai_service.py          # AI chat business logic
 │   ├── digest_service.py      # Digest generation logic
-│   └── scraping_service.py    # Scraping orchestration
+│   └── scraping_service.py    # Multi-source scraping (GNews API, SerpAPI, Politiken, DR)
 └── main.py                    # FastAPI application setup
 ```
 
@@ -350,6 +352,34 @@ def get_brand_with_topics(db: Session, brand_id: int):
 - Brug appropriate HTTP status codes
 - Provide descriptive error messages
 - Log errors for debugging (men ikke sensitive data)
+
+## 📊 Current API Endpoints
+
+### Core Resources
+- **Brands** (`/api/v1/brands/`): Brand management med CRUD operations
+- **Topics** (`/api/v1/topics/`): Topic management med keyword associations
+- **Keywords** (`/api/v1/keywords/`): Keyword CRUD operations
+- **Mentions** (`/api/v1/mentions/`): Komplet mention management med filtrering
+
+### Functionality Endpoints  
+- **Scraping** (`/api/v1/scraping/`): Multi-source data collection (GNews, SerpAPI, Politiken, DR)
+- **Digests** (`/api/v1/digests/`): Automated mention summarization
+- **Chat** (`/api/v1/chat/`): AI-powered insights og analytics
+- **Users** (`/api/v1/users/`): User profile management
+
+### Data Sources Integration
+- **GNews API**: Professional news sources med dansk sprogfokus
+- **SerpAPI**: Google News resultater via structured API  
+- **Politiken**: Direct web scraping af danske artikler
+- **DR RSS**: Danmarks Radio news feeds
+- **Deduplication**: Automatic URL-based duplicate removal på tværs af alle kilder
+
+### Mention Management Features
+- **Filtering**: Brand, topic, platform, read status, notification status
+- **Pagination**: Skip/limit support for store datasæt
+- **Status tracking**: Read/unread og notification status management
+- **Batch operations**: Convenience endpoints for status updates
+- **Full CRUD**: Create, read, update, delete mentions
 
 ## 🧪 Testing Strategy
 

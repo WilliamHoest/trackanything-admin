@@ -6,9 +6,15 @@ TrackAnything er et avanceret medieovervågnings-værktøj der kontinuerligt scr
 
 ### Core Features
 
-- **Medieovervågning**: Automatisk scraping af mentions fra forskellige platforme
+- **Medieovervågning**: Automatisk scraping af mentions fra fire datakilder:
+  - **GNews API**: Professionelle nyhedskilder med dansk sprogfokus
+  - **SerpAPI**: Google News resultater via API
+  - **Politiken**: Direkte web scraping af dansk nyhedssite  
+  - **DR**: RSS feeds fra Danmarks Radio
 - **Brand Management**: Opret og administrer brands med tilhørende topics og keywords
-- **Mention Tracking**: Spor og kategoriser medieomtaler med read/unread status
+- **Keyword Management**: Fuld CRUD funktionalitet for keywords
+- **Mention Management**: Komplet REST API til at administrere mentions
+- **Mention Tracking**: Spor og kategoriser medieomtaler med read/unread og notification status
 - **Digest System**: Automatisk generering af sammenfatninger af mentions
 - **AI-Powered Chat**: "Atlas Intelligence" - AI-assistent der giver insights baseret på mention data
 
@@ -25,7 +31,9 @@ Atlas chatten giver brugerne mulighed for at have intelligente samtaler med dere
 
 - `/api/v1/brands/` - Brand management
 - `/api/v1/topics/` - Topic og keyword management
-- `/api/v1/scraping/` - Scraping funktionalitet
+- `/api/v1/keywords/` - Keyword management (CRUD operations)
+- `/api/v1/mentions/` - Mention management og viewing (CRUD operations)
+- `/api/v1/scraping/` - Scraping funktionalitet (GNews, SerpAPI, Politiken, DR)
 - `/api/v1/digests/` - Digest generering
 - `/api/v1/chat/` - AI chat funktionalitet
 - `/api/v1/users/` - User authentication
@@ -36,6 +44,8 @@ Atlas chatten giver brugerne mulighed for at have intelligente samtaler med dere
 - PostgreSQL database
 - Supabase account
 - DeepSeek API key (for AI chat funktionalitet)
+- GNews API key (for news scraping)
+- SerpAPI key (for Google News scraping)
 - Visual Studio Code (anbefalet)
 
 ## 🛠️ Installation & Setup
@@ -151,6 +161,10 @@ DATABASE_URL=postgresql://username:password@host:port/database_name
 
 # AI Chat
 DEEPSEEK_API_KEY=your_deepseek_api_key
+
+# News Scraping APIs
+GNEWS_API_KEY=your_gnews_api_key
+SERPAPI_KEY=your_serpapi_key
 
 # Server Config
 DEBUG=true

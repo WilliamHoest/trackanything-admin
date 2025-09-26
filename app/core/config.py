@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     supabase_url: str
     supabase_key: str
     deepseek_api_key: str
+    gnews_api_key: str
+    serpapi_key: str
     database_url: str = ""  # PostgreSQL connection string
     host: str = "0.0.0.0"
     port: int = 8000
