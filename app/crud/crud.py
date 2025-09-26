@@ -270,3 +270,13 @@ def update_mention_notified_status(db: Session, mention_id: int, status: bool) -
         db.commit()
         return True
     return False
+
+def get_latest_mentions_by_profile(db: Session, profile_id: uuid.UUID, limit: int = 10) -> List[Mention]:
+    """Get the latest mentions for a profile across all their brands"""
+    return db.query(Mention).options(
+        joinedload(Mention.platform),
+        joinedload(Mention.topic),
+        joinedload(Mention.brand)
+    ).join(Brand).filter(
+        Brand.profile_id == profile_id
+    ).order_by(Mention.published_at.desc()).limit(limit).all()
