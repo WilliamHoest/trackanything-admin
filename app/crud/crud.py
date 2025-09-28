@@ -147,7 +147,15 @@ def delete_keyword(db: Session, keyword_id: int) -> bool:
         db.delete(db_keyword)
         db.commit()
         return True
-    return False
+
+def get_keywords_by_topic(db: Session, topic_id: int) -> List[Keyword]:
+    """Get all keywords associated with a specific topic"""
+    topic = db.query(Topic).options(joinedload(Topic.keywords)).filter(Topic.id == topic_id).first()
+    return topic.keywords if topic else []
+
+def get_brands_by_user(db: Session, user_id: uuid.UUID) -> List[Brand]:
+    """Get all brands for a specific user (alias for get_brands_by_profile)"""
+    return get_brands_by_profile(db, user_id)
 
 # Platform CRUD
 def get_platform(db: Session, platform_id: int) -> Optional[Platform]:
