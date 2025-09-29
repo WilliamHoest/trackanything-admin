@@ -1,20 +1,19 @@
-# TrackAnything Admin Backend - System Arkitektur
+# TrackAnything Admin Backend - System Arkitektur v3.0
 
 Dette dokument beskriver arkitekturen, design patterns og development guidelines for TrackAnything Admin Backend. Læs dette dokument før du implementerer nye features.
 
 ## 🏗️ Overordnet Arkitektur
 
-TrackAnything Admin Backend følger **Clean Architecture** og **Domain-Driven Design** principper med FastAPI som web framework.
+TrackAnything Admin Backend følger **Clean Architecture** principper med **Supabase REST API** som database layer og FastAPI som web framework.
 
 ### Core Layers
 
 ```
 ├── API Layer          # FastAPI endpoints og request/response handling
-├── Service Layer       # Business logic og orchestration  
-├── CRUD Layer         # Database operationer og queries
-├── Model Layer        # SQLAlchemy database models
+├── Service Layer       # Business logic og external API calls  
+├── CRUD Layer         # Supabase REST API operations
 ├── Schema Layer       # Pydantic validation og serialization
-└── Core Layer         # Configuration, database connection, utilities
+└── Core Layer         # Configuration, Supabase client, utilities
 ```
 
 ## 📁 Detailed Folder Structure
@@ -24,22 +23,20 @@ app/
 ├── api/
 │   ├── api_v1.py              # Main API router - registrerer alle endpoints
 │   └── endpoints/             # Individual endpoint implementations
-│       ├── brands.py          # Brand management endpoints
-│       ├── topics.py          # Topic/keyword management
-│       ├── keywords.py        # Keyword CRUD operations
-│       ├── mentions.py        # Mention management og viewing
-│       ├── users.py           # Authentication endpoints
-│       ├── scraping.py        # Scraping functionality (GNews, SerpAPI, Politiken, DR)
-│       ├── digests.py         # Digest generation
-│       └── chat.py            # AI chat functionality
+│       ├── brands_supabase.py      # Brand management endpoints
+│       ├── topics_supabase.py      # Topic/keyword management
+│       ├── keywords_supabase.py    # Keyword CRUD operations
+│       ├── mentions_supabase.py    # Mention management og viewing
+│       ├── users_supabase.py       # User profile endpoints
+│       ├── scraping_supabase.py    # Scraping functionality (GNews, SerpAPI, Politiken, DR)
+│       ├── digests_supabase.py     # Digest generation og webhook sending
+│       └── chat_supabase.py        # AI chat functionality
 ├── core/
 │   ├── config.py              # Settings og environment configuration
-│   ├── database.py            # SQLAlchemy database setup
-│   └── supabase_client.py     # Supabase client initialization
+│   ├── supabase_client.py     # Supabase client initialization
+│   └── supabase_db.py         # Supabase CRUD dependency injection
 ├── crud/
-│   └── crud.py                # Database operations (Create, Read, Update, Delete)
-├── models/
-│   └── models.py              # SQLAlchemy ORM models
+│   └── supabase_crud.py       # Supabase REST API operations (Create, Read, Update, Delete)
 ├── schemas/
 │   ├── brand.py               # Pydantic schemas for brand endpoints
 │   ├── topic.py               # Pydantic schemas for topic endpoints
@@ -51,7 +48,7 @@ app/
 │   └── dev_auth.py            # Development authentication (mock user)
 ├── services/
 │   ├── ai_service.py          # AI chat business logic
-│   ├── digest_service.py      # Digest generation logic
+│   ├── digest_service_supabase.py  # Digest generation logic med Supabase
 │   └── scraping_service.py    # Multi-source scraping (GNews API, SerpAPI, Politiken, DR)
 └── main.py                    # FastAPI application setup
 ```
@@ -70,7 +67,7 @@ app/
 
 # Må IKKE:
 - Indeholde business logic
-- Direkte database operationer
+- Direkte database operationer (brug SupabaseCRUD)
 - Komplekse data transformationer
 ```
 
@@ -79,34 +76,48 @@ app/
 ```python
 # Ansvarlig for:
 - Complex business operations
-- Orchestrating multiple CRUD operations
-- External API integrations (DeepSeek, webhooks)
+- Orchestrating multiple Supabase CRUD operations
+- External API integrations (DeepSeek, webhooks, scraping sources)
 - Data processing og aggregation
 - Business rule enforcement
 
 # Eksempel struktur:
-async def create_brand_with_topics(db: Session, brand_data: BrandCreate, topics: List[str]):
+async def create_brand_with_topics(crud: SupabaseCRUD, brand_data: BrandCreate, topics: List[str], user_id: UUID):
     # 1. Validate business rules
-    # 2. Create brand via CRUD
-    # 3. Create related topics via CRUD
+    # 2. Create brand via Supabase CRUD
+    # 3. Create related topics via Supabase CRUD
     # 4. Send notifications if needed
     # 5. Return structured response
 ```
 
-### 3. CRUD Layer (`/crud/`)
-**Ansvar**: Database operationer, simple queries, data persistence
+### 3. CRUD Layer (`/crud/supabase_crud.py`)
+**Ansvar**: Supabase REST API operationer, data persistence
 ```python
 # Kun ansvarlig for:
-- SQLAlchemy query operations
-- Basic CRUD operations
-- Database relationships handling
-- Simple data filtering/sorting
+- Supabase table operations (select, insert, update, delete)
+- Data filtering og ordering via Supabase queries
+- Relationship handling via Supabase joins
+- Error handling for API calls
 
 # Må IKKE:
 - Business logic
-- External API calls
+- External API calls (andet end Supabase)
 - Complex data transformations
 - Authentication checks (håndteres i API layer)
+
+# Eksempel pattern:
+async def create_brand(self, brand: BrandCreate, profile_id: UUID) -> Optional[Dict[str, Any]]:
+    try:
+        data = {
+            "name": brand.name,
+            "profile_id": str(profile_id),
+            "created_at": datetime.utcnow().isoformat()
+        }
+        result = self.supabase.table("brands").insert(data).execute()
+        return result.data[0] if result.data else None
+    except Exception as e:
+        print(f"Error creating brand: {e}")
+        return None
 ```
 
 ### 4. Schema Layer (`/schemas/`)
@@ -139,30 +150,35 @@ class BrandResponse(BaseModel):
 ### 1. Endpoint Structure
 ```python
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from app.core.database import get_db
+from app.core.supabase_db import get_supabase_crud
+from app.crud.supabase_crud import SupabaseCRUD
 from app.security.auth import get_current_user
 
 router = APIRouter()
 
-@router.post("/", response_model=ResponseSchema, status_code=status.HTTP_201_CREATED)
-def create_resource(
+@router.post("/", response_model=dict, status_code=status.HTTP_201_CREATED)
+async def create_resource(
     resource: CreateSchema,
-    db: Session = Depends(get_db),
+    crud: SupabaseCRUD = Depends(get_supabase_crud),
     current_user = Depends(get_current_user)
 ):
     """
     Clear docstring explaining what this endpoint does
     """
     # 1. Additional validation if needed
-    # 2. Call service layer function
+    # 2. Call CRUD function
     # 3. Handle potential exceptions
     # 4. Return response
     
     try:
-        result = service_function(db, resource, current_user.id)
+        result = await crud.create_resource(resource, current_user.id)
+        if not result:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create resource"
+            )
         return result
-    except ValueError as e:
+    except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
@@ -180,20 +196,20 @@ from app.core.config import settings
 get_user = get_dev_user if settings.debug else get_current_user
 
 @router.get("/")
-def protected_endpoint(current_user = Depends(get_user)):
+async def protected_endpoint(current_user = Depends(get_user)):
     # Endpoint automatically uses dev auth in DEBUG mode
     pass
 ```
 
-### 3. Database Dependency Pattern
+### 3. Supabase Dependency Pattern
 ```python
-# Altid brug dependency injection for database sessions
-def endpoint_function(
-    db: Session = Depends(get_db),
+# Altid brug dependency injection for Supabase CRUD
+async def endpoint_function(
+    crud: SupabaseCRUD = Depends(get_supabase_crud),
     current_user = Depends(get_user)
 ):
-    # Database session automatisk managed (åbnet/lukket)
-    result = crud.get_something(db, user_id=current_user.id)
+    # Supabase CRUD operations
+    result = await crud.get_something(current_user.id)
     return result
 ```
 
@@ -201,21 +217,21 @@ def endpoint_function(
 ```python
 # Konsistent error handling
 try:
-    result = some_operation()
+    result = await crud.some_operation()
     if not result:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Resource not found"
         )
     return result
-except ValidationError as e:
+except ValueError as e:
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
         detail=f"Validation error: {str(e)}"
     )
 except Exception as e:
     # Log error for debugging
-    logger.error(f"Unexpected error: {str(e)}")
+    print(f"Unexpected error: {str(e)}")
     raise HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail="Internal server error"
@@ -231,117 +247,127 @@ except Exception as e:
 ### Authorization Pattern
 ```python
 # Check ownership before operations
-def update_brand(brand_id: int, current_user = Depends(get_user)):
+async def update_brand(brand_id: int, crud: SupabaseCRUD, current_user):
     # 1. Get resource
-    brand = crud.get_brand(db, brand_id)
+    brand = await crud.get_brand(brand_id)
     
     # 2. Check ownership
-    if not brand or brand.profile_id != current_user.id:
+    if not brand or brand.get("profile_id") != str(current_user.id):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Brand not found"
         )
     
     # 3. Proceed with operation
-    return crud.update_brand(db, brand_id, updates)
+    return await crud.update_brand(brand_id, updates, current_user.id)
 ```
 
-## 🗄️ Database Patterns
-
-### Model Relationships
-```python
-# Altid definer relationships i begge retninger
-class Profile(Base):
-    brands = relationship("Brand", back_populates="profile", cascade="all, delete-orphan")
-
-class Brand(Base):
-    profile = relationship("Profile", back_populates="brands")
-```
+## 🗄️ Supabase Patterns
 
 ### CRUD Operations
 ```python
-# Standard CRUD pattern
-def get_entity(db: Session, entity_id: int) -> Optional[EntityModel]:
-    return db.query(EntityModel).filter(EntityModel.id == entity_id).first()
+# Standard Supabase CRUD pattern
+async def get_entity(self, entity_id: int) -> Optional[Dict[str, Any]]:
+    try:
+        result = self.supabase.table("entities").select("*").eq("id", entity_id).execute()
+        return result.data[0] if result.data else None
+    except Exception as e:
+        print(f"Error getting entity: {e}")
+        return None
 
-def get_entities_by_user(db: Session, user_id: uuid.UUID) -> List[EntityModel]:
-    return db.query(EntityModel).filter(EntityModel.user_id == user_id).all()
+async def get_entities_by_user(self, user_id: UUID) -> List[Dict[str, Any]]:
+    try:
+        result = self.supabase.table("entities").select("*").eq("profile_id", str(user_id)).execute()
+        return result.data or []
+    except Exception as e:
+        print(f"Error getting entities by user: {e}")
+        return []
 
-def create_entity(db: Session, entity: EntityCreateSchema, user_id: uuid.UUID) -> EntityModel:
-    db_entity = EntityModel(**entity.model_dump(), user_id=user_id)
-    db.add(db_entity)
-    db.commit()
-    db.refresh(db_entity)
-    return db_entity
+async def create_entity(self, entity: EntityCreateSchema, user_id: UUID) -> Optional[Dict[str, Any]]:
+    try:
+        data = {
+            **entity.model_dump(),
+            "profile_id": str(user_id),
+            "created_at": datetime.utcnow().isoformat()
+        }
+        result = self.supabase.table("entities").insert(data).execute()
+        return result.data[0] if result.data else None
+    except Exception as e:
+        print(f"Error creating entity: {e}")
+        return None
 ```
 
 ### Query Optimization
 ```python
-# Use joinedload for relationships
-from sqlalchemy.orm import joinedload
-
-def get_brand_with_topics(db: Session, brand_id: int):
-    return db.query(Brand).options(
-        joinedload(Brand.topics)
-    ).filter(Brand.id == brand_id).first()
+# Use Supabase joins for relationships
+async def get_brand_with_topics(self, brand_id: int):
+    try:
+        result = self.supabase.table("brands").select("""
+            *,
+            topics(*)
+        """).eq("id", brand_id).execute()
+        return result.data[0] if result.data else None
+    except Exception as e:
+        print(f"Error getting brand with topics: {e}")
+        return None
 ```
 
 ## 🚀 Guidelines for New Features
 
 ### 1. Planning Phase
-1. **Define Domain Model**: Hvad er dine entities og deres relationships?
+1. **Define Data Structure**: Hvilke Supabase tables skal du bruge?
 2. **Design API Contract**: Hvilke endpoints skal du bruge?
 3. **Identify Business Logic**: Hvad er business rules og workflows?
 
 ### 2. Implementation Order
 ```
-1. Models (SQLAlchemy) - Database structure
-2. Schemas (Pydantic) - Input/output validation  
-3. CRUD operations - Database layer
-4. Services - Business logic layer
-5. API endpoints - HTTP interface
-6. Tests - Validation af functionality
+1. Schemas (Pydantic) - Input/output validation  
+2. CRUD operations - Supabase REST API calls
+3. Services - Business logic layer (hvis nødvendigt)
+4. API endpoints - HTTP interface
+5. Tests - Validation af functionality
 ```
 
 ### 3. Feature Implementation Checklist
-
-**Models (`/models/models.py`)**
-- [ ] Define SQLAlchemy model with appropriate relationships
-- [ ] Add foreign keys og constraints
-- [ ] Include timestamps (created_at, updated_at)
 
 **Schemas (`/schemas/`)**
 - [ ] Create separate file for domain (e.g., `new_feature.py`)
 - [ ] Define Create, Update, Response schemas
 - [ ] Add proper validation rules
 
-**CRUD (`/crud/crud.py`)**
-- [ ] Implement basic CRUD operations
-- [ ] Add user-specific queries (filter by user/profile)
+**CRUD (`/crud/supabase_crud.py`)**
+- [ ] Add new methods to SupabaseCRUD class
+- [ ] Implement basic CRUD operations via Supabase REST API
+- [ ] Add user-specific queries (filter by profile_id)
 - [ ] Include relationship loading where needed
+- [ ] Add proper error handling
 
 **Services (`/services/`)**
 - [ ] Create service file if complex business logic
 - [ ] Handle external API integrations
 - [ ] Implement business rule validation
+- [ ] Use async/await patterns
 
 **API Endpoints (`/api/endpoints/`)**
-- [ ] Create new router file
+- [ ] Create new `{feature}_supabase.py` file
 - [ ] Implement all necessary endpoints (GET, POST, PUT, DELETE)
-- [ ] Add proper authentication
+- [ ] Add proper authentication via get_user dependency
+- [ ] Use SupabaseCRUD dependency injection
 - [ ] Include comprehensive docstrings
+- [ ] Add ownership validation
 
 **Integration (`/api/api_v1.py`)**
+- [ ] Import new endpoint module
 - [ ] Register new router in main API router
 - [ ] Add appropriate prefix og tags
 
 ### 4. Code Quality Standards
 
 **Naming Conventions**
-- Models: PascalCase (e.g., `UserProfile`, `BrandMention`)
 - Functions: snake_case (e.g., `get_user_brands`, `create_mention`)
 - Variables: snake_case
 - Constants: UPPER_SNAKE_CASE
+- Files: snake_case with `_supabase.py` suffix for endpoints
 
 **Documentation**
 - All public functions skal have docstrings
@@ -352,6 +378,7 @@ def get_brand_with_topics(db: Session, brand_id: int):
 - Brug appropriate HTTP status codes
 - Provide descriptive error messages
 - Log errors for debugging (men ikke sensitive data)
+- Always handle Supabase exceptions gracefully
 
 ## 📊 Current API Endpoints
 
@@ -360,12 +387,12 @@ def get_brand_with_topics(db: Session, brand_id: int):
 - **Topics** (`/api/v1/topics/`): Topic management med keyword associations
 - **Keywords** (`/api/v1/keywords/`): Keyword CRUD operations
 - **Mentions** (`/api/v1/mentions/`): Komplet mention management med filtrering
+- **Users** (`/api/v1/users/`): User profile management
 
 ### Functionality Endpoints  
 - **Scraping** (`/api/v1/scraping/`): Multi-source data collection (GNews, SerpAPI, Politiken, DR)
-- **Digests** (`/api/v1/digests/`): Automated mention summarization
+- **Digests** (`/api/v1/digests/`): Automated mention summarization og webhook delivery
 - **Chat** (`/api/v1/chat/`): AI-powered insights og analytics
-- **Users** (`/api/v1/users/`): User profile management
 
 ### Data Sources Integration
 - **GNews API**: Professional news sources med dansk sprogfokus
@@ -386,26 +413,25 @@ def get_brand_with_topics(db: Session, brand_id: int):
 ### Test Structure
 ```
 tests/
-├── test_crud.py          # Database operations tests
-├── test_services.py      # Business logic tests  
-├── test_endpoints.py     # API integration tests
-└── conftest.py          # Test configuration og fixtures
+├── test_supabase_crud.py    # Supabase CRUD operations tests
+├── test_services.py         # Business logic tests  
+├── test_endpoints.py        # API integration tests
+└── conftest.py             # Test configuration og fixtures
 ```
 
 ### Test Patterns
 ```python
-# Use pytest fixtures for database setup
+# Use pytest fixtures for Supabase setup
 @pytest.fixture
-def test_db():
-    # Setup test database
-    yield db
-    # Cleanup
+def supabase_crud():
+    return SupabaseCRUD()
 
 # Test CRUD operations
-def test_create_brand(test_db):
+@pytest.mark.asyncio
+async def test_create_brand(supabase_crud):
     brand_data = BrandCreate(name="Test Brand")
-    result = crud.create_brand(test_db, brand_data, user_id)
-    assert result.name == "Test Brand"
+    result = await supabase_crud.create_brand(brand_data, user_id)
+    assert result["name"] == "Test Brand"
 
 # Test API endpoints
 def test_create_brand_endpoint(client, auth_headers):
@@ -417,10 +443,10 @@ def test_create_brand_endpoint(client, auth_headers):
 
 ## 🔄 Development Workflow
 
-1. **Start med database design** - Models først
+1. **Start med data design** - Planlæg Supabase table structure
 2. **Define API contract** - Schemas og endpoint signatures  
-3. **Implement data layer** - CRUD operations
-4. **Add business logic** - Services layer
+3. **Implement CRUD layer** - Supabase REST API operations
+4. **Add business logic** - Services layer hvis nødvendig
 5. **Connect HTTP layer** - API endpoints
 6. **Test thoroughly** - Unit og integration tests
 7. **Update documentation** - API docs og architecture notes
@@ -430,10 +456,11 @@ def test_create_brand_endpoint(client, auth_headers):
 ❌ **Don't put business logic in API endpoints**
 ❌ **Don't put HTTP concerns in CRUD functions**  
 ❌ **Don't skip authentication checks**
-❌ **Don't return SQLAlchemy models directly from endpoints**
+❌ **Don't return raw Supabase responses without validation**
 ❌ **Don't hardcode configuration values**
 ❌ **Don't ignore error handling**
 ❌ **Don't forget to validate user ownership of resources**
+❌ **Don't use synchronous operations (always use async/await)**
 
 ✅ **Do follow the layered architecture**
 ✅ **Do use dependency injection**
@@ -441,3 +468,55 @@ def test_create_brand_endpoint(client, auth_headers):
 ✅ **Do handle errors gracefully**
 ✅ **Do write comprehensive tests**
 ✅ **Do document your code**
+✅ **Do use async/await for all Supabase operations**
+
+## 🎯 Supabase Best Practices
+
+### Query Optimization
+- Use `select()` to specify only needed fields
+- Use `single()` for single record queries
+- Use proper filtering with `eq()`, `in_()`, etc.
+- Use `order()` for consistent sorting
+
+### Error Handling
+```python
+try:
+    result = self.supabase.table("table").operation().execute()
+    return result.data
+except Exception as e:
+    print(f"Supabase operation failed: {e}")
+    return None
+```
+
+### Relationship Handling
+```python
+# Use nested selects for relationships
+result = self.supabase.table("brands").select("""
+    *,
+    topics(*, keywords(*)),
+    profile:profiles(*)
+""").execute()
+```
+
+## 📋 Migration Notes
+
+### From SQLAlchemy to Supabase REST API (v2.0 → v3.0)
+
+**Completed Changes:**
+- ✅ Replaced all SQLAlchemy ORM models with Supabase REST API calls
+- ✅ Converted all endpoints to use `SupabaseCRUD` dependency injection
+- ✅ Removed `database.py`, `models/`, and `crud/` (SQLAlchemy files)
+- ✅ Updated `requirements.txt` to remove SQLAlchemy dependencies
+- ✅ All endpoints now use `async/await` pattern
+- ✅ Consistent error handling across all operations
+
+**Benefits Achieved:**
+- 🚀 No more network/port issues (uses HTTPS instead of PostgreSQL port 5432)
+- 📈 Better performance via Supabase connection pooling
+- 🔄 Auto-scaling database operations
+- 🎯 Simplified architecture with fewer dependencies
+- 🛡️ Built-in Row Level Security support
+
+---
+
+*Dette dokument er opdateret til v3.0 arkitekturen med 100% Supabase REST API implementation.*

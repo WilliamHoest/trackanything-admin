@@ -2,9 +2,6 @@ import httpx
 import json
 import asyncio
 from typing import AsyncGenerator, List, Dict, Any
-from sqlalchemy.orm import Session
-from app.models import models
-from app.crud import crud
 from app.core.config import settings
 
 def get_persona_prompt(persona: str = "general") -> str:
@@ -58,18 +55,17 @@ Be proactive, insightful, and always suggest concrete next steps. Look for patte
     return personas.get(persona, personas['general'])
 
 async def get_ai_chat_response(
-    db: Session, 
-    current_user: models.Profile, 
     message: str, 
-    conversation_history: List[Dict[str, str]]
+    conversation_history: List[Dict[str, str]],
+    context: Dict[str, Any]
 ) -> AsyncGenerator[str, None]:
-    """Generate AI chat response with streaming"""
+    """Generate AI chat response with streaming using Supabase context"""
     
     # Get user's persona preference (for now we'll use general, but this can be extended)
     user_persona = "general"  # This could come from user profile in the future
     
-    # Get the latest mentions for context
-    mentions = crud.get_latest_mentions_by_profile(db, current_user.id, limit=10)
+    # Extract mentions from context
+    mentions = context.get("recent_mentions", [])
     
     # Build the system prompt
     context_message = get_persona_prompt(user_persona)
@@ -85,38 +81,37 @@ Be conversational yet professional, proactive in suggesting insights, and always
 IMPORTANT: You may contain errors and your responses are informational only. Users should verify important information and consult with human experts for critical decisions."""
 
     # Add company context if available
-    if current_user.company_name:
+    user_profile = context.get("user_profile", {})
+    if user_profile.get("company_name"):
         context_message += f"""
 
 COMPANY CONTEXT:
-Company: {current_user.company_name}
+Company: {user_profile['company_name']}
 
 Use this company information to provide more personalized and relevant insights that align with the client's business context, industry, and specific needs."""
 
     # Add monitoring data context
     if mentions:
-        unread_count = sum(1 for m in mentions if not m.read_status)
-        platforms = list(set(m.platform.name for m in mentions if m.platform))
-        topics = list(set(m.topic.name for m in mentions if m.topic))
+        unread_count = sum(1 for m in mentions if not m.get("read_status", False))
+        brands = context.get("brands", [])
         
         context_message += f"""
 
 CURRENT MONITORING STATUS:
 - Total recent mentions: {len(mentions)}
 - Unread mentions: {unread_count}
-- Active platforms: {', '.join(platforms)}
-- Tracked topics: {', '.join(topics)}
+- Monitored brands: {', '.join([b['name'] for b in brands])}
 
 RECENT MONITORING DATA:
 """
         for i, mention in enumerate(mentions, 1):
-            status = "[READ]" if mention.read_status else "[UNREAD]"
-            brand_name = mention.brand.name if mention.brand else "N/A"
-            topic_name = mention.topic.name if mention.topic else "N/A"
-            platform_name = mention.platform.name if mention.platform else "N/A"
-            published_date = mention.published_at.strftime("%Y-%m-%d %H:%M") if mention.published_at else "N/A"
+            status = "[READ]" if mention.get("read_status") else "[UNREAD]"
+            brand_name = mention.get("brands", {}).get("name", "N/A") if mention.get("brands") else "N/A"
+            topic_name = mention.get("topics", {}).get("name", "N/A") if mention.get("topics") else "N/A"
+            platform_name = mention.get("platforms", {}).get("name", "N/A") if mention.get("platforms") else "N/A"
+            published_date = mention.get("published_at", "N/A")
             
-            context_message += f"{i}. {status} Brand: {brand_name}, Topic: {topic_name}, Platform: {platform_name}, Date: {published_date}, Content: \"{mention.caption}\"\n"
+            context_message += f"{i}. {status} Brand: {brand_name}, Topic: {topic_name}, Platform: {platform_name}, Date: {published_date}, Content: \"{mention.get('caption', '')}\"\n"
             
         context_message += "\nUse this monitoring data to provide insights, identify patterns, suggest strategic actions, and highlight urgent items when relevant to the user's questions. Look for trends, sentiment shifts, and opportunities."
 

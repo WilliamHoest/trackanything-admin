@@ -1,1 +1,1 @@
-# CRUD operations
+# CRUD package for Supabase operations
