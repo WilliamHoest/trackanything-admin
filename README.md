@@ -9,7 +9,7 @@ TrackAnything er et avanceret medieovervågnings-værktøj der kontinuerligt scr
 - **Medieovervågning**: Automatisk scraping af mentions fra fire datakilder:
   - **GNews API**: Professionelle nyhedskilder med dansk sprogfokus
   - **SerpAPI**: Google News resultater via API
-  - **Politiken**: Direkte web scraping af dansk nyhedssite  
+  - **Politiken**: Direkte web scraping af dansk nyhedssite
   - **DR**: RSS feeds fra Danmarks Radio
 - **Brand Management**: Opret og administrer brands med tilhørende topics og keywords
 - **Keyword Management**: Fuld CRUD funktionalitet for keywords
@@ -191,7 +191,7 @@ Med virtual environment aktiveret:
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 # Eller alternativt:
-python app/main.py
+python -m app.main
 ```
 
 Serveren starter på `http://localhost:8000`
