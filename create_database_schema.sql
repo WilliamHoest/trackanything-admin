@@ -4,8 +4,11 @@
 -- Create profiles table (extends auth.users)
 CREATE TABLE profiles (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    name TEXT,
+    email TEXT,
+    phone_number TEXT,
     company_name TEXT,
-    contact_email TEXT,
+    contact_email TEXT,  -- Kept for backwards compatibility
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 

@@ -80,15 +80,23 @@ Be conversational yet professional, proactive in suggesting insights, and always
 
 IMPORTANT: You may contain errors and your responses are informational only. Users should verify important information and consult with human experts for critical decisions."""
 
-    # Add company context if available
+    # Add user context if available
     user_profile = context.get("user_profile", {})
-    if user_profile.get("company_name"):
+    if user_profile.get("name") or user_profile.get("company_name"):
+        context_parts = []
+        if user_profile.get("name"):
+            context_parts.append(f"User: {user_profile['name']}")
+        if user_profile.get("company_name"):
+            context_parts.append(f"Company: {user_profile['company_name']}")
+        if user_profile.get("email"):
+            context_parts.append(f"Contact: {user_profile['email']}")
+
         context_message += f"""
 
-COMPANY CONTEXT:
-Company: {user_profile['company_name']}
+USER CONTEXT:
+{chr(10).join(context_parts)}
 
-Use this company information to provide more personalized and relevant insights that align with the client's business context, industry, and specific needs."""
+Use this information to provide more personalized and relevant insights that align with the user's business context, industry, and specific needs."""
 
     # Add monitoring data context
     if mentions:

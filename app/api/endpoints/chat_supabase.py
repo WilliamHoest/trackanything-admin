@@ -59,6 +59,9 @@ async def stream_chat(
         # Build context for AI
         context = {
             "user_profile": {
+                "name": profile.get("name", ""),
+                "email": profile.get("email", ""),
+                "phone_number": profile.get("phone_number", ""),
                 "company_name": profile.get("company_name", ""),
                 "contact_email": profile.get("contact_email", "")
             },
@@ -110,6 +113,9 @@ async def chat(
         # Build context for AI
         context = {
             "user_profile": {
+                "name": profile.get("name", ""),
+                "email": profile.get("email", ""),
+                "phone_number": profile.get("phone_number", ""),
                 "company_name": profile.get("company_name", ""),
                 "contact_email": profile.get("contact_email", "")
             },

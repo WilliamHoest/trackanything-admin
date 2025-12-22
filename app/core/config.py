@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     deepseek_api_key: str
     gnews_api_key: str
     serpapi_key: str
+    tavily_api_key: str = ""  # Optional web search tool
     database_url: str = ""  # PostgreSQL connection string
     host: str = "0.0.0.0"
     port: int = 8000
