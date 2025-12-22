@@ -2,13 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List
 from app.schemas.topic import TopicCreate, TopicUpdate
 from app.security.auth import get_current_user
-from app.security.dev_auth import get_dev_user
 from app.core.config import settings
 from app.core.supabase_db import get_supabase_crud
 from app.crud.supabase_crud import SupabaseCRUD
-
-# Use development auth in debug mode, real auth in production
-get_user = get_dev_user if settings.debug else get_current_user
 
 router = APIRouter()
 
@@ -16,7 +12,7 @@ router = APIRouter()
 async def get_topics_by_brand(
     brand_id: int,
     crud: SupabaseCRUD = Depends(get_supabase_crud),
-    current_user = Depends(get_user)
+    current_user = Depends(get_current_user)
 ):
     """Get all topics for a specific brand"""
     # Check if brand belongs to current user
@@ -34,7 +30,7 @@ async def get_topics_by_brand(
 async def get_topic(
     topic_id: int,
     crud: SupabaseCRUD = Depends(get_supabase_crud),
-    current_user = Depends(get_user)
+    current_user = Depends(get_current_user)
 ):
     """Get a specific topic with keywords"""
     topic = await crud.get_topic(topic_id)
@@ -59,7 +55,7 @@ async def create_topic(
     brand_id: int,
     topic: TopicCreate,
     crud: SupabaseCRUD = Depends(get_supabase_crud),
-    current_user = Depends(get_user)
+    current_user = Depends(get_current_user)
 ):
     """Create a new topic for a brand"""
     # Check if brand belongs to current user
@@ -83,7 +79,7 @@ async def update_topic(
     topic_id: int,
     topic_update: TopicUpdate,
     crud: SupabaseCRUD = Depends(get_supabase_crud),
-    current_user = Depends(get_user)
+    current_user = Depends(get_current_user)
 ):
     """Update a topic"""
     # Get existing topic and check ownership
@@ -116,7 +112,7 @@ async def update_topic(
 async def delete_topic(
     topic_id: int,
     crud: SupabaseCRUD = Depends(get_supabase_crud),
-    current_user = Depends(get_user)
+    current_user = Depends(get_current_user)
 ):
     """Delete a topic"""
     # Get existing topic and check ownership

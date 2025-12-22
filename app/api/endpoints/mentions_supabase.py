@@ -1,13 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from typing import List, Optional
 from app.security.auth import get_current_user
-from app.security.dev_auth import get_dev_user
 from app.core.config import settings
 from app.core.supabase_db import get_supabase_crud
 from app.crud.supabase_crud import SupabaseCRUD
-
-# Use development auth in debug mode, real auth in production
-get_user = get_dev_user if settings.debug else get_current_user
 
 router = APIRouter()
 
@@ -20,7 +16,7 @@ async def get_mentions(
     platform_id: Optional[int] = Query(None, description="Filter by platform ID"),
     read_status: Optional[bool] = Query(None, description="Filter by read status"),
     crud: SupabaseCRUD = Depends(get_supabase_crud),
-    current_user = Depends(get_user)
+    current_user = Depends(get_current_user)
 ):
     """
     Get mentions with optional filtering using Supabase REST API.
@@ -43,7 +39,7 @@ async def mark_mention_as_read(
     mention_id: int,
     read_status: bool = True,
     crud: SupabaseCRUD = Depends(get_supabase_crud),
-    current_user = Depends(get_user)
+    current_user = Depends(get_current_user)
 ):
     """
     Mark a mention as read or unread using Supabase REST API.

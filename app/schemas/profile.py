@@ -9,10 +9,12 @@ class ProfileBase(BaseModel):
     phone_number: Optional[str] = None
     company_name: Optional[str] = None
     contact_email: Optional[EmailStr] = None  # Kept for backwards compatibility
+    role: Optional[str] = 'customer'
 
 class ProfileCreate(ProfileBase):
     name: str  # Required when creating
     email: EmailStr  # Required when creating
+    role: Optional[str] = 'customer'
 
 class ProfileUpdate(BaseModel):
     name: Optional[str] = None
@@ -20,6 +22,7 @@ class ProfileUpdate(BaseModel):
     phone_number: Optional[str] = None
     company_name: Optional[str] = None
     contact_email: Optional[EmailStr] = None
+    role: Optional[str] = None
 
 class ProfileResponse(ProfileBase):
     id: uuid.UUID

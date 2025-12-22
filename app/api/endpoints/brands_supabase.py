@@ -2,20 +2,16 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List
 from app.schemas.brand import BrandCreate, BrandUpdate, BrandResponse
 from app.security.auth import get_current_user
-from app.security.dev_auth import get_dev_user
 from app.core.config import settings
 from app.core.supabase_db import get_supabase_crud
 from app.crud.supabase_crud import SupabaseCRUD
-
-# Use development auth in debug mode, real auth in production
-get_user = get_dev_user if settings.debug else get_current_user
 
 router = APIRouter()
 
 @router.get("/", response_model=List[dict])
 async def get_brands(
     crud: SupabaseCRUD = Depends(get_supabase_crud),
-    current_user = Depends(get_user)
+    current_user = Depends(get_current_user)
 ):
     """Get all brands for the current user"""
     brands = await crud.get_brands_by_profile(current_user.id)
@@ -25,7 +21,7 @@ async def get_brands(
 async def get_brand(
     brand_id: int,
     crud: SupabaseCRUD = Depends(get_supabase_crud),
-    current_user = Depends(get_user)
+    current_user = Depends(get_current_user)
 ):
     """Get a specific brand with topics by ID"""
     brand = await crud.get_brand(brand_id)
@@ -52,7 +48,7 @@ async def get_brand(
 async def create_brand(
     brand: BrandCreate,
     crud: SupabaseCRUD = Depends(get_supabase_crud),
-    current_user = Depends(get_user)
+    current_user = Depends(get_current_user)
 ):
     """Create a new brand"""
     new_brand = await crud.create_brand(brand, current_user.id)
@@ -68,7 +64,7 @@ async def update_brand(
     brand_id: int,
     brand_update: BrandUpdate,
     crud: SupabaseCRUD = Depends(get_supabase_crud),
-    current_user = Depends(get_user)
+    current_user = Depends(get_current_user)
 ):
     """Update a brand"""
     updated_brand = await crud.update_brand(brand_id, brand_update, current_user.id)
@@ -83,7 +79,7 @@ async def update_brand(
 async def delete_brand(
     brand_id: int,
     crud: SupabaseCRUD = Depends(get_supabase_crud),
-    current_user = Depends(get_user)
+    current_user = Depends(get_current_user)
 ):
     """Delete a brand"""
     success = await crud.delete_brand(brand_id, current_user.id)

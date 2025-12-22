@@ -2,13 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List
 from app.schemas.keyword import KeywordCreate, KeywordUpdate
 from app.security.auth import get_current_user
-from app.security.dev_auth import get_dev_user
 from app.core.config import settings
 from app.core.supabase_db import get_supabase_crud
 from app.crud.supabase_crud import SupabaseCRUD
-
-# Use development auth in debug mode, real auth in production
-get_user = get_dev_user if settings.debug else get_current_user
 
 router = APIRouter()
 
@@ -16,7 +12,7 @@ router = APIRouter()
 async def get_keywords_by_topic(
     topic_id: int,
     crud: SupabaseCRUD = Depends(get_supabase_crud),
-    current_user = Depends(get_user)
+    current_user = Depends(get_current_user)
 ):
     """Get all keywords for a specific topic"""
     # Check topic ownership
@@ -43,7 +39,7 @@ async def create_keyword(
     topic_id: int,
     keyword: KeywordCreate,
     crud: SupabaseCRUD = Depends(get_supabase_crud),
-    current_user = Depends(get_user)
+    current_user = Depends(get_current_user)
 ):
     """Create a new keyword for a topic"""
     # Check topic ownership
@@ -74,7 +70,7 @@ async def create_keyword(
 async def delete_keyword(
     keyword_id: int,
     crud: SupabaseCRUD = Depends(get_supabase_crud),
-    current_user = Depends(get_user)
+    current_user = Depends(get_current_user)
 ):
     """Delete a keyword"""
     # Get keyword and check ownership through topic->brand chain

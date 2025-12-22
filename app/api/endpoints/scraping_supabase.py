@@ -3,14 +3,10 @@ from pydantic import BaseModel
 from typing import List, Dict, Optional
 from datetime import datetime, timezone
 from app.security.auth import get_current_user
-from app.security.dev_auth import get_dev_user
 from app.core.config import settings
 from app.core.supabase_db import get_supabase_crud
 from app.crud.supabase_crud import SupabaseCRUD
 from app.services.scraping_service import fetch_all_mentions
-
-# Use development auth in debug mode, real auth in production
-get_user = get_dev_user if settings.debug else get_current_user
 
 router = APIRouter()
 
@@ -35,7 +31,7 @@ class UserScrapeResponse(BaseModel):
 async def scrape_brand(
     brand_id: int,
     crud: SupabaseCRUD = Depends(get_supabase_crud),
-    current_user = Depends(get_user)
+    current_user = Depends(get_current_user)
 ):
     """
     Run scraping process for all keywords in a specific brand scope
@@ -166,7 +162,7 @@ async def scrape_brand(
 @router.post("/user", response_model=UserScrapeResponse)
 async def scrape_user(
     crud: SupabaseCRUD = Depends(get_supabase_crud),
-    current_user = Depends(get_user)
+    current_user = Depends(get_current_user)
 ):
     """
     Run scraping process for all brands belonging to the current user
@@ -226,7 +222,7 @@ async def scrape_user(
 @router.get("/keywords/user", response_model=List[str])
 async def get_user_keywords(
     crud: SupabaseCRUD = Depends(get_supabase_crud),
-    current_user = Depends(get_user)
+    current_user = Depends(get_current_user)
 ):
     """
     Get all keywords for the current user (for testing scraping scope)

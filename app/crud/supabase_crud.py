@@ -33,6 +33,7 @@ class SupabaseCRUD:
                 "id": str(profile_id),
                 "company_name": profile.company_name,
                 "contact_email": profile.contact_email,
+                "role": profile.role,
                 "created_at": datetime.utcnow().isoformat()
             }
             result = self.supabase.table("profiles").insert(data).execute()

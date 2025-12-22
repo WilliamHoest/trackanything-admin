@@ -2,14 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from typing import Dict, Any
 from app.security.auth import get_current_user
-from app.security.dev_auth import get_dev_user
 from app.core.config import settings
 from app.core.supabase_db import get_supabase_crud
 from app.crud.supabase_crud import SupabaseCRUD
 from app.services.digest_service_supabase import create_and_send_digest_supabase
-
-# Use development auth in debug mode, real auth in production
-get_user = get_dev_user if settings.debug else get_current_user
 
 router = APIRouter()
 
@@ -24,7 +20,7 @@ class DigestResponse(BaseModel):
 async def send_digest(
     brand_id: int,
     crud: SupabaseCRUD = Depends(get_supabase_crud),
-    current_user = Depends(get_user)
+    current_user = Depends(get_current_user)
 ):
     """
     Send digest of new mentions for a specific brand to its webhook
@@ -72,7 +68,7 @@ async def send_digest(
 @router.post("/send/user", response_model=Dict[str, Any])
 async def send_user_digest(
     crud: SupabaseCRUD = Depends(get_supabase_crud),
-    current_user = Depends(get_user)
+    current_user = Depends(get_current_user)
 ):
     """
     Send digest for all brands belonging to the current user

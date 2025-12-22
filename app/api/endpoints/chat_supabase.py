@@ -4,15 +4,11 @@ from typing import List, Dict, Any, Optional
 from uuid import UUID
 from pydantic import BaseModel
 from app.security.auth import get_current_user
-from app.security.dev_auth import get_dev_user
 from app.core.config import settings
 from app.core.supabase_db import get_supabase_crud
 from app.crud.supabase_crud import SupabaseCRUD
 from app.services.ai_service import get_ai_chat_response
 import json
-
-# Use development auth in debug mode, real auth in production
-get_user = get_dev_user if settings.debug else get_current_user
 
 router = APIRouter()
 
@@ -33,7 +29,7 @@ class ChatResponse(BaseModel):
 async def stream_chat(
     request: ChatRequest,
     crud: SupabaseCRUD = Depends(get_supabase_crud),
-    current_user = Depends(get_user)
+    current_user = Depends(get_current_user)
 ):
     """Stream AI chat response with user's mention data context and history persistence"""
     try:
@@ -128,7 +124,7 @@ async def stream_chat(
 async def chat(
     request: ChatRequest,
     crud: SupabaseCRUD = Depends(get_supabase_crud),
-    current_user = Depends(get_user)
+    current_user = Depends(get_current_user)
 ):
     """Non-streaming AI chat response (for testing)"""
     try:

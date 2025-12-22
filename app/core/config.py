@@ -7,6 +7,7 @@ load_dotenv()
 class Settings(BaseSettings):
     supabase_url: str
     supabase_key: str
+    supabase_service_role_key: str  # Needed for admin operations (creating users)
     deepseek_api_key: str
     gnews_api_key: str
     serpapi_key: str
