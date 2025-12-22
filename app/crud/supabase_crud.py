@@ -375,5 +375,86 @@ class SupabaseCRUD:
             print(f"Error marking mentions as sent: {e}")
             return False
 
+    # Chat History CRUD
+    async def create_chat(self, user_id: uuid.UUID, title: str = "New Chat") -> Optional[Dict[str, Any]]:
+        """Create a new chat session"""
+        try:
+            data = {
+                "user_id": str(user_id),
+                "title": title,
+                "updated_at": datetime.utcnow().isoformat()
+            }
+            result = self.supabase.table("chats").insert(data).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            print(f"Error creating chat: {e}")
+            return None
+
+    async def get_chats(self, user_id: uuid.UUID) -> List[Dict[str, Any]]:
+        """Get all chats for a user"""
+        try:
+            result = self.supabase.table("chats").select("*").eq("user_id", str(user_id)).order("updated_at", desc=True).execute()
+            return result.data or []
+        except Exception as e:
+            print(f"Error getting chats: {e}")
+            return []
+
+    async def get_chat_details(self, chat_id: uuid.UUID, user_id: uuid.UUID) -> Optional[Dict[str, Any]]:
+        """Get chat details with messages"""
+        try:
+            # First verify ownership and get chat
+            chat_result = self.supabase.table("chats").select("*").eq("id", str(chat_id)).eq("user_id", str(user_id)).execute()
+            if not chat_result.data:
+                return None
+            
+            chat = chat_result.data[0]
+            
+            # Get messages
+            msgs_result = self.supabase.table("messages").select("*").eq("chat_id", str(chat_id)).order("created_at", desc=False).execute()
+            chat["messages"] = msgs_result.data or []
+            
+            return chat
+        except Exception as e:
+            print(f"Error getting chat details: {e}")
+            return None
+
+    async def delete_chat(self, chat_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+        """Delete a chat session"""
+        try:
+            # RLS policies should handle the user_id check, but we add it for safety
+            result = self.supabase.table("chats").delete().eq("id", str(chat_id)).eq("user_id", str(user_id)).execute()
+            return len(result.data) > 0
+        except Exception as e:
+            print(f"Error deleting chat: {e}")
+            return False
+
+    async def update_chat_title(self, chat_id: uuid.UUID, title: str, user_id: uuid.UUID) -> Optional[Dict[str, Any]]:
+        """Update chat title"""
+        try:
+            result = self.supabase.table("chats").update({"title": title, "updated_at": datetime.utcnow().isoformat()}).eq("id", str(chat_id)).eq("user_id", str(user_id)).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            print(f"Error updating chat title: {e}")
+            return None
+
+    async def create_message(self, chat_id: uuid.UUID, role: str, content: str) -> Optional[Dict[str, Any]]:
+        """Create a new message in a chat"""
+        try:
+            data = {
+                "chat_id": str(chat_id),
+                "role": role,
+                "content": content,
+                "created_at": datetime.utcnow().isoformat()
+            }
+            result = self.supabase.table("messages").insert(data).execute()
+            
+            # Update parent chat's updated_at
+            self.supabase.table("chats").update({"updated_at": datetime.utcnow().isoformat()}).eq("id", str(chat_id)).execute()
+            
+            return result.data[0] if result.data else None
+        except Exception as e:
+            print(f"Error creating message: {e}")
+            return None
+
 # Create singleton instance
 supabase_crud = SupabaseCRUD()

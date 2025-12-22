@@ -7,7 +7,8 @@ from app.api.endpoints import (
     users_supabase,
     scraping_supabase,
     digests_supabase,
-    chat_supabase
+    chat_supabase,
+    chat_history
 )
 
 api_router = APIRouter()
@@ -21,3 +22,4 @@ api_router.include_router(users_supabase.router, prefix="/users", tags=["users"]
 api_router.include_router(scraping_supabase.router, prefix="/scraping", tags=["scraping"])
 api_router.include_router(digests_supabase.router, prefix="/digests", tags=["digests"])
 api_router.include_router(chat_supabase.router, prefix="/chat", tags=["chat"])
+api_router.include_router(chat_history.router, prefix="/chats", tags=["chats"])

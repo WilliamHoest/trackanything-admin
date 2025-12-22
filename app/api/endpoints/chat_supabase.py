@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+from uuid import UUID
 from pydantic import BaseModel
 from app.security.auth import get_current_user
 from app.security.dev_auth import get_dev_user
@@ -22,9 +23,11 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     conversation_history: List[ChatMessage] = []
+    chat_id: Optional[UUID] = None
 
 class ChatResponse(BaseModel):
     content: str
+    chat_id: Optional[UUID] = None
 
 @router.post("/stream")
 async def stream_chat(
@@ -32,7 +35,7 @@ async def stream_chat(
     crud: SupabaseCRUD = Depends(get_supabase_crud),
     current_user = Depends(get_user)
 ):
-    """Stream AI chat response with user's mention data context"""
+    """Stream AI chat response with user's mention data context and history persistence"""
     try:
         # Get the user's profile from Supabase
         profile = await crud.get_profile(current_user.id)
@@ -41,6 +44,21 @@ async def stream_chat(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="User profile not found"
             )
+        
+        # Handle Chat Persistence
+        chat_id = request.chat_id
+        
+        # 1. If no chat_id, create new chat with auto-generated title
+        if not chat_id:
+            # Generate title from first 30 chars of message
+            title = (request.message[:30] + '...') if len(request.message) > 30 else request.message
+            new_chat = await crud.create_chat(current_user.id, title)
+            if new_chat:
+                chat_id = UUID(new_chat["id"])
+        
+        # 2. Save User Message
+        if chat_id:
+            await crud.create_message(chat_id, "user", request.message)
         
         # Convert conversation history to simple dict format
         conversation_history = [
@@ -70,17 +88,37 @@ async def stream_chat(
             "recent_mentions": recent_mentions[:10]  # Only send top 10 for context
         }
         
-        # Get AI response with streaming
+        # 3. Stream and Accumulate for Persistence
+        async def stream_with_persistence():
+            full_response = ""
+            # Yield chat_id first if it was newly created (client might need it)
+            # But StreamingResponse expects string bytes.
+            # We will rely on client re-fetching or handling the chat_id from response headers if we could,
+            # but standard StreamingResponse is body-only.
+            # Alternatively, we assume client updates URL if they provided no ID, 
+            # but since we can't send JSON + Stream easily, we just stream the text.
+            # The client will have to refresh the chat list to see the new chat.
+            
+            async for chunk in get_ai_chat_response(request.message, conversation_history, context):
+                full_response += chunk
+                yield chunk
+            
+            # 4. Save Assistant Message after stream completes
+            if chat_id and full_response.strip():
+                await crud.create_message(chat_id, "assistant", full_response)
+        
         return StreamingResponse(
-            get_ai_chat_response(request.message, conversation_history, context),
+            stream_with_persistence(),
             media_type="text/plain",
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
+                "X-Chat-ID": str(chat_id) if chat_id else "" # Pass Chat ID in header so client knows
             }
         )
         
     except Exception as e:
+        print(f"Chat error: {e}") # Log error
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Chat service error: {str(e)}"
