@@ -76,7 +76,7 @@ async def analyze_source_url(
         )
 
 
-@router.get("/configs", response_model=List[dict])
+@router.get("/configs", response_model=List[SourceConfigResponse])
 async def get_all_source_configs(
     crud: SupabaseCRUD = Depends(get_supabase_crud),
     current_user = Depends(get_current_user)
@@ -85,27 +85,15 @@ async def get_all_source_configs(
     Get all saved source configurations.
 
     Returns a list of all domains that have been configured with CSS selectors.
-
-    Example response:
-    ```json
-    [
-        {
-            "id": "uuid-here",
-            "domain": "berlingske.dk",
-            "title_selector": "article h1",
-            "content_selector": "article .article-body",
-            "date_selector": "time[datetime]",
-            "created_at": "2025-12-23T10:00:00Z",
-            "updated_at": "2025-12-23T10:00:00Z"
-        }
-    ]
-    ```
     """
     try:
         service = SourceConfigService(crud)
         configs = await service.list_all_configs()
         return configs
     except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Error in get_all_source_configs: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve configurations: {str(e)}"
