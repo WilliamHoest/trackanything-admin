@@ -185,3 +185,45 @@ async def delete_source_config(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete configuration: {str(e)}"
         )
+
+
+@router.post("/configs/{domain}/refresh", response_model=SourceConfigAnalysisResponse)
+async def refresh_source_config(
+    domain: str,
+    crud: SupabaseCRUD = Depends(get_supabase_crud),
+    current_user = Depends(get_current_user)
+):
+    """
+    Refresh source configuration by re-analyzing the homepage.
+
+    Finds a fresh article from the homepage and re-analyzes CSS selectors.
+
+    Args:
+        domain: The domain to refresh (e.g., "berlingske.dk")
+
+    Returns:
+        Updated configuration with new selectors and verification URL
+
+    Raises:
+        404: If no article URL found on homepage
+        500: If refresh fails
+    """
+    try:
+        service = SourceConfigService(crud)
+        result = await service.refresh_config_from_homepage(domain)
+
+        if result.confidence == "low" and "No article URL found" in result.message:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=result.message
+            )
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to refresh configuration: {str(e)}"
+        )

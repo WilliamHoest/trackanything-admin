@@ -130,6 +130,124 @@ class SourceConfigService:
                 message=f"Analysis failed: {str(e)}"
             )
 
+    async def refresh_config_from_homepage(self, domain: str) -> SourceConfigAnalysisResponse:
+        """
+        Refresh source configuration by analyzing the homepage.
+
+        Workflow:
+        1. Fetch homepage HTML from https://{domain}
+        2. Find ONE valid article URL using heuristics
+        3. Call analyze_url() with that article
+        4. Return updated config + verification URL
+
+        Args:
+            domain: Domain to refresh (e.g., 'berlingske.dk')
+
+        Returns:
+            SourceConfigAnalysisResponse with updated selectors
+        """
+        # Normalize domain
+        domain = domain.lower()
+        if domain.startswith('www.'):
+            domain = domain[4:]
+
+        homepage_url = f"https://{domain}"
+
+        try:
+            print(f"🔄 Refreshing config for {domain}...")
+            homepage_html = await self._fetch_html(homepage_url)
+
+            # Find article URL from homepage
+            article_url = await self._find_article_url_from_html(homepage_html, domain)
+
+            if not article_url:
+                return SourceConfigAnalysisResponse(
+                    domain=domain,
+                    confidence="low",
+                    message=f"No article URL found on homepage of {domain}"
+                )
+
+            print(f"   ✅ Found article: {article_url}")
+
+            # Re-analyze with found article
+            result = await self.analyze_url(article_url)
+            result.message = f"{result.message} (verified with: {article_url})"
+
+            return result
+
+        except Exception as e:
+            return SourceConfigAnalysisResponse(
+                domain=domain,
+                confidence="low",
+                message=f"Refresh failed: {str(e)}"
+            )
+
+    async def _find_article_url_from_html(self, html: str, domain: str) -> Optional[str]:
+        """
+        Find ONE valid article URL from HTML using heuristics.
+
+        Strategy:
+        - Filter links to same domain
+        - Prefer links with numbers (dates/IDs) in path
+        - Path must be > 20 chars
+        - Skip non-article paths (search, about, login, etc.)
+
+        Args:
+            html: Raw HTML content
+            domain: Expected domain
+
+        Returns:
+            Full article URL or None if not found
+        """
+        try:
+            soup = BeautifulSoup(html, 'lxml')
+
+            for link in soup.select("a[href]"):
+                href = link.get("href", "")
+                if not href:
+                    continue
+
+                full_url = urljoin(f"https://{domain}", href)
+                parsed = urlparse(full_url)
+
+                # Filter: Same domain
+                if domain not in parsed.netloc:
+                    continue
+
+                # Filter: Path length > 20
+                if len(parsed.path) < 20:
+                    continue
+
+                path_lower = parsed.path.lower()
+
+                # Skip non-article paths
+                skip_patterns = ['/search', '/kategori', '/tag', '/author', '/om-os',
+                               '/kontakt', '/cookie', '/privacy', '/login', '/signup']
+                if any(skip in path_lower for skip in skip_patterns):
+                    continue
+
+                # Prefer paths with numbers (dates/IDs)
+                if any(char.isdigit() for char in parsed.path):
+                    return full_url
+
+            # Fallback: First long path without numbers
+            for link in soup.select("a[href]"):
+                href = link.get("href", "")
+                if not href:
+                    continue
+
+                full_url = urljoin(f"https://{domain}", href)
+                parsed = urlparse(full_url)
+
+                if domain in parsed.netloc and len(parsed.path) > 30:
+                    return full_url
+
+            return None
+
+        except Exception as e:
+            print(f"   ⚠️ Error finding article URL: {e}")
+            return None
+
     async def _fetch_html(self, url: str) -> str:
         """
         Fetch raw HTML content from a URL.

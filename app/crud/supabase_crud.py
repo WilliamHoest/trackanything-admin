@@ -325,6 +325,10 @@ class SupabaseCRUD:
             if existing:
                 # Update existing config
                 data = config.model_dump(exclude_unset=True, exclude_none=True)
+                # Ensure search_url_pattern is included if present in config
+                if hasattr(config, 'search_url_pattern'):
+                    data['search_url_pattern'] = config.search_url_pattern
+                    
                 result = self.supabase.table("source_configs").update(data).eq("domain", config.domain).execute()
                 return result.data[0] if result.data else None
             else:
@@ -334,6 +338,7 @@ class SupabaseCRUD:
                     "title_selector": config.title_selector,
                     "content_selector": config.content_selector,
                     "date_selector": config.date_selector,
+                    "search_url_pattern": config.search_url_pattern,
                     "created_at": datetime.utcnow().isoformat(),
                     "updated_at": datetime.utcnow().isoformat()
                 }

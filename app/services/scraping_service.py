@@ -41,24 +41,6 @@ RETRY_WAIT_MAX = 8  # seconds
 # Initialize User-Agent rotator
 ua = UserAgent()
 
-# Politiken discovery configuration
-POLITIKEN_BASE_URL = "https://politiken.dk"
-POLITIKEN_SECTIONS = [
-    "/",               # forsiden
-    "/senestenyt",     # seneste nyt
-    "/danmark",
-    "/udland",
-    "/kultur",
-]
-
-# DR RSS feeds for discovery
-DR_FEEDS = [
-    "https://www.dr.dk/nyheder/service/feeds/allenyheder",
-    "https://www.dr.dk/nyheder/service/feeds/indland",
-    "https://www.dr.dk/nyheder/service/feeds/udland",
-    "https://www.dr.dk/nyheder/service/feeds/politik",
-]
-
 
 # === Helper Functions ===
 
@@ -298,6 +280,106 @@ async def _scrape_article_content(
         return None
 
 
+# === Universal Configurable Sources Scraper ===
+
+async def scrape_configurable_sources(
+    keywords: List[str],
+    max_articles_per_source: int = 50
+) -> List[Dict]:
+    """
+    Universal scraper that works with any source configured in database.
+
+    Logic:
+    1. Fetch all configs with search_url_pattern from database
+    2. For each config + keyword: Generate search URL, fetch HTML
+    3. Extract article links using heuristic (same domain, path > 20 chars)
+    4. Call _scrape_article_content() for each link (uses database config)
+
+    Args:
+        keywords: List of search keywords
+        max_articles_per_source: Maximum articles to extract per source (default: 50)
+
+    Returns:
+        List of article dictionaries with title, link, date, platform, content
+    """
+    if not keywords:
+        return []
+
+    print("🔍 Configurable Sources: Starting universal discovery...")
+
+    # Fetch all configs with search patterns
+    crud = SupabaseCRUD()
+    all_configs = await crud.get_all_source_configs()
+    searchable_configs = [
+        c for c in all_configs
+        if c.get('search_url_pattern') and '{keyword}' in c['search_url_pattern']
+    ]
+
+    print(f"   Found {len(searchable_configs)} searchable configs")
+    if not searchable_configs:
+        print("   ⚠️ No searchable configs found (missing search_url_pattern)")
+        return []
+
+    discovered_urls = {}  # domain -> set of URLs
+
+    # Phase 1: Discovery - Find article URLs via search
+    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+        for config in searchable_configs:
+            domain = config['domain']
+            search_pattern = config['search_url_pattern']
+            discovered_urls[domain] = set()
+
+            print(f"   🔎 Searching {domain}...")
+
+            for keyword in keywords[:5]:  # Limit to avoid rate limiting
+                try:
+                    search_url = search_pattern.replace('{keyword}', quote_plus(keyword))
+                    headers = {"User-Agent": get_random_user_agent()}
+                    response = await fetch_with_retry(client, search_url, headers=headers)
+                    soup = BeautifulSoup(response.text, "lxml")
+
+                    # Heuristic: Find <a> tags, filter by domain + path length
+                    for link in soup.select("a[href]"):
+                        href = link.get("href", "")
+                        if not href:
+                            continue
+
+                        full_url = urljoin(f"https://{domain}", href)
+                        parsed = urlparse(full_url)
+
+                        # Filter: Same domain + path > 20 chars
+                        if domain in parsed.netloc and len(parsed.path) > 20:
+                            discovered_urls[domain].add(normalize_url(full_url))
+
+                except Exception as e:
+                    print(f"      ⚠️ Search failed for '{keyword}' on {domain}: {e}")
+                    continue
+
+            print(f"      ✅ Discovered {len(discovered_urls[domain])} URLs for {domain}")
+
+    # Phase 2: Extraction - Scrape each URL using unified method
+    print("🔍 Configurable Sources: Starting extraction phase...")
+    articles = []
+
+    for domain, urls in discovered_urls.items():
+        source_articles = 0
+        for article_url in urls:
+            if source_articles >= max_articles_per_source:
+                break
+
+            try:
+                article = await _scrape_article_content(article_url, keywords)
+                if article:
+                    articles.append(article)
+                    source_articles += 1
+            except Exception as e:
+                print(f"   ⚠️ Extraction failed for {article_url}: {e}")
+                continue
+
+    print(f"✅ Configurable Sources: Found {len(articles)} matching articles")
+    return articles
+
+
 # === Retry Decorator for HTTP Requests ===
 
 @retry(
@@ -321,156 +403,6 @@ async def fetch_with_retry(
 
 
 # === Scrapers ===
-
-async def scrape_politiken(
-    keywords: List[str],
-    max_articles: int = 50
-) -> List[Dict]:
-    """
-    Scrape Politiken for articles matching keywords.
-
-    Architecture:
-    - Phase 1 (Discovery): Find article URLs from section pages
-    - Phase 2 (Extraction): Use _scrape_article_content for each URL
-      (which uses database configs if available)
-
-    This method is now config-agnostic - all parsing logic happens
-    in the unified _scrape_article_content method.
-    """
-    if not keywords:
-        return []
-
-    print("🔍 Politiken: Starting discovery phase...")
-    discovered_urls = set()
-
-    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-        # Phase 1: Discovery - Find article URLs
-        for section in POLITIKEN_SECTIONS:
-            url = POLITIKEN_BASE_URL + section
-
-            try:
-                headers = {"User-Agent": get_random_user_agent()}
-                response = await fetch_with_retry(client, url, headers=headers)
-                soup = BeautifulSoup(response.text, "lxml")
-
-                # Find all article links
-                for link in soup.select("a[href]"):
-                    href = link.get("href", "")
-
-                    if not href or "art" not in href:  # Only want articles
-                        continue
-
-                    full_url = urljoin(POLITIKEN_BASE_URL, href)
-                    normalized_url = normalize_url(full_url)
-
-                    # Avoid duplicates
-                    if normalized_url not in discovered_urls:
-                        discovered_urls.add(normalized_url)
-
-            except Exception as e:
-                print(f"   ⚠️ Section {section} failed: {e}")
-                continue
-
-        print(f"   ✅ Discovered {len(discovered_urls)} unique article URLs")
-
-    # Phase 2: Extraction - Scrape each URL using unified method
-    print("🔍 Politiken: Starting extraction phase...")
-    articles = []
-
-    for article_url in discovered_urls:
-        if len(articles) >= max_articles:
-            break
-
-        try:
-            # Use the unified extraction method (config-aware)
-            article = await _scrape_article_content(article_url, keywords)
-            if article:
-                articles.append(article)
-
-        except Exception as e:
-            print(f"   ⚠️ Failed to extract {article_url}: {e}")
-            continue
-
-    print(f"✅ Politiken: Found {len(articles)} matching articles")
-    return articles
-
-
-async def scrape_dr(
-    keywords: List[str],
-    max_articles: int = 50
-) -> List[Dict]:
-    """
-    Scrape DR RSS feeds for articles matching keywords.
-
-    Architecture:
-    - Phase 1 (Discovery): Find article URLs from RSS feeds
-    - Phase 2 (Extraction): Use _scrape_article_content for each URL
-      (which uses database configs if available)
-
-    This method is now config-agnostic - all parsing logic happens
-    in the unified _scrape_article_content method.
-    """
-    if not keywords:
-        return []
-
-    print("🔍 DR: Starting discovery phase (RSS)...")
-    discovered_urls = []
-    since = datetime.now(timezone.utc) - timedelta(hours=24)
-
-    # Phase 1: Discovery - Find article URLs from RSS feeds
-    for feed_url in DR_FEEDS:
-        try:
-            # feedparser is synchronous, run in executor
-            loop = asyncio.get_event_loop()
-            feed = await loop.run_in_executor(None, feedparser.parse, feed_url)
-
-            for entry in feed.entries:
-                link = getattr(entry, "link", None)
-
-                if not link:
-                    continue
-
-                # Parse published date to filter old articles
-                published = None
-                if hasattr(entry, "published_parsed") and entry.published_parsed:
-                    published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
-
-                # Skip if too old
-                if published and published < since:
-                    continue
-
-                # Normalize and avoid duplicates
-                normalized_url = normalize_url(link)
-                if normalized_url not in discovered_urls:
-                    discovered_urls.append(normalized_url)
-
-        except Exception as e:
-            print(f"   ⚠️ Feed {feed_url} failed: {e}")
-            continue
-
-    print(f"   ✅ Discovered {len(discovered_urls)} recent article URLs from RSS")
-
-    # Phase 2: Extraction - Scrape each URL using unified method
-    print("🔍 DR: Starting extraction phase...")
-    articles = []
-
-    for article_url in discovered_urls:
-        if len(articles) >= max_articles:
-            break
-
-        try:
-            # Use the unified extraction method (config-aware)
-            article = await _scrape_article_content(article_url, keywords)
-            if article:
-                articles.append(article)
-
-        except Exception as e:
-            print(f"   ⚠️ Failed to extract {article_url}: {e}")
-            continue
-
-    print(f"✅ DR: Found {len(articles)} matching articles")
-    return articles
-
 
 async def scrape_gnews(keywords: List[str]) -> List[Dict]:
     """
@@ -623,14 +555,13 @@ async def fetch_all_mentions(keywords: List[str]) -> List[Dict]:
     results = await asyncio.gather(
         scrape_gnews(keywords),
         scrape_serpapi(keywords),
-        scrape_politiken(keywords),
-        scrape_dr(keywords),
+        scrape_configurable_sources(keywords),
         return_exceptions=True
     )
 
     # Collect all mentions, handling exceptions
     all_mentions = []
-    source_names = ["GNews", "SerpAPI", "Politiken", "DR"]
+    source_names = ["GNews", "SerpAPI", "Configurable Sources"]
 
     for idx, result in enumerate(results):
         source = source_names[idx]
