@@ -41,7 +41,7 @@ RETRY_WAIT_MAX = 8  # seconds
 # Initialize User-Agent rotator
 ua = UserAgent()
 
-# Politiken configuration
+# Politiken discovery configuration
 POLITIKEN_BASE_URL = "https://politiken.dk"
 POLITIKEN_SECTIONS = [
     "/",               # forsiden
@@ -51,7 +51,7 @@ POLITIKEN_SECTIONS = [
     "/kultur",
 ]
 
-# DR RSS feeds
+# DR RSS feeds for discovery
 DR_FEEDS = [
     "https://www.dr.dk/nyheder/service/feeds/allenyheder",
     "https://www.dr.dk/nyheder/service/feeds/indland",
@@ -155,58 +155,106 @@ async def _get_config_for_domain(domain: str) -> Optional[Dict]:
         return None
 
 
-async def scrape_generic_with_config(
+async def _scrape_article_content(
     url: str,
-    keywords: List[str],
-    config: Dict
+    keywords: List[str]
 ) -> Optional[Dict]:
     """
-    Scrape a URL using dynamic CSS selectors from source configuration.
+    Unified method to scrape article content from any URL.
 
-    This is a generic scraper that works with ANY domain, as long as
-    there's a configuration available with CSS selectors.
+    This method is the core of the configuration-based scraping system:
+    1. Extracts domain from URL
+    2. Tries to load configuration from database
+    3. If config exists, uses it for extraction
+    4. If no config, falls back to generic "best guess" extraction
+    5. Checks for keyword match
+    6. Returns article data or None
 
     Args:
-        url: The URL to scrape
+        url: The article URL to scrape
         keywords: List of keywords to match
-        config: Source configuration with CSS selectors
 
     Returns:
         Article dictionary if successful and matches keywords, None otherwise
     """
-    if not keywords or not config:
+    if not keywords:
         return None
 
     patterns = compile_keyword_patterns(keywords)
 
     try:
+        # Extract domain from URL
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower()
+        if domain.startswith('www.'):
+            domain = domain[4:]
+
+        # Try to get configuration for this domain
+        config = await _get_config_for_domain(domain)
+
         async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
             headers = {"User-Agent": get_random_user_agent()}
             response = await fetch_with_retry(client, url, headers=headers)
             soup = BeautifulSoup(response.text, "lxml")
 
-            # Extract data using dynamic selectors
             title = ""
             content = ""
             date_str = ""
 
-            # Extract title
-            if config.get('title_selector'):
-                title_elem = soup.select_one(config['title_selector'])
+            if config:
+                # Use database configuration
+                print(f"   🔧 Using DB config for {domain}")
+
+                # Extract title
+                if config.get('title_selector'):
+                    title_elem = soup.select_one(config['title_selector'])
+                    if title_elem:
+                        title = title_elem.get_text(strip=True)
+
+                # Extract content
+                if config.get('content_selector'):
+                    content_elem = soup.select_one(config['content_selector'])
+                    if content_elem:
+                        content = content_elem.get_text(strip=True)
+
+                # Extract date
+                if config.get('date_selector'):
+                    date_elem = soup.select_one(config['date_selector'])
+                    if date_elem:
+                        date_str = date_elem.get('datetime') or date_elem.get_text(strip=True)
+
+            else:
+                # Fallback to generic "best guess" extraction
+                print(f"   ⚙️ Using generic extraction for {domain} (no config)")
+
+                # Try common title patterns
+                title_elem = (
+                    soup.select_one('article h1') or
+                    soup.select_one('h1[itemprop="headline"]') or
+                    soup.select_one('h1.article-title') or
+                    soup.select_one('header h1') or
+                    soup.select_one('h1')
+                )
                 if title_elem:
                     title = title_elem.get_text(strip=True)
 
-            # Extract content
-            if config.get('content_selector'):
-                content_elem = soup.select_one(config['content_selector'])
+                # Try common content patterns
+                content_elem = (
+                    soup.select_one('[itemprop="articleBody"]') or
+                    soup.select_one('article .article-content') or
+                    soup.select_one('.article-body') or
+                    soup.select_one('article')
+                )
                 if content_elem:
                     content = content_elem.get_text(strip=True)
 
-            # Extract date
-            if config.get('date_selector'):
-                date_elem = soup.select_one(config['date_selector'])
+                # Try common date patterns
+                date_elem = (
+                    soup.select_one('time[datetime]') or
+                    soup.select_one('[itemprop="datePublished"]') or
+                    soup.select_one('time.published')
+                )
                 if date_elem:
-                    # Try to get datetime attribute first, then text
                     date_str = date_elem.get('datetime') or date_elem.get_text(strip=True)
 
             # Check for keyword match
@@ -214,21 +262,39 @@ async def scrape_generic_with_config(
             if keyword_matches_text(patterns, text_to_search):
                 platform = get_platform_from_url(url)
 
+                # Parse date if available
+                published_parsed = None
+                if date_str:
+                    try:
+                        parsed_date = dateparser.parse(date_str)
+                        if parsed_date:
+                            if parsed_date.tzinfo is None:
+                                parsed_date = parsed_date.replace(tzinfo=timezone.utc)
+                            published_parsed = parsed_date.timetuple()
+                    except Exception:
+                        pass
+
+                # Use current time as fallback
+                if not published_parsed:
+                    since = datetime.now(timezone.utc) - timedelta(hours=24)
+                    published_parsed = since.timetuple()
+
                 article = {
                     "title": title or "Uden titel",
                     "link": url,
-                    "published_parsed": None,  # Will be parsed from date_str if needed
+                    "published_parsed": published_parsed,
                     "platform": platform,
-                    "content_teaser": content[:500] if content else ""  # First 500 chars
+                    "content_teaser": content[:500] if content else ""
                 }
 
-                print(f"📰 {platform} match (config-based): {title}")
+                config_status = "config" if config else "generic"
+                print(f"   📰 {platform} match ({config_status}): {title}")
                 return article
 
             return None
 
     except Exception as e:
-        print(f"⚠️ Generic scrape failed for {url}: {e}")
+        print(f"   ⚠️ Failed to scrape {url}: {e}")
         return None
 
 
@@ -261,30 +327,24 @@ async def scrape_politiken(
     max_articles: int = 50
 ) -> List[Dict]:
     """
-    Scrape Politiken sections for articles matching keywords.
-    Uses async httpx with retry logic and rotating User-Agent.
+    Scrape Politiken for articles matching keywords.
 
-    Dynamic Configuration:
-    - First checks if a source configuration exists for politiken.dk
-    - If config exists, uses dynamic CSS selectors for parsing
-    - Otherwise falls back to hardcoded scraping logic
+    Architecture:
+    - Phase 1 (Discovery): Find article URLs from section pages
+    - Phase 2 (Extraction): Use _scrape_article_content for each URL
+      (which uses database configs if available)
+
+    This method is now config-agnostic - all parsing logic happens
+    in the unified _scrape_article_content method.
     """
     if not keywords:
         return []
 
-    # Check if we have a source configuration for Politiken
-    config = await _get_config_for_domain("politiken.dk")
-    if config:
-        print("🔧 Using dynamic configuration for Politiken")
-        # If we have a config, we could use it here for enhanced parsing
-        # For now, we'll use the existing logic as fallback
-        # Future: Implement config-based parsing for Politiken
-
-    patterns = compile_keyword_patterns(keywords)
-    articles = []
-    since = datetime.now(timezone.utc) - timedelta(hours=24)
+    print("🔍 Politiken: Starting discovery phase...")
+    discovered_urls = set()
 
     async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+        # Phase 1: Discovery - Find article URLs
         for section in POLITIKEN_SECTIONS:
             url = POLITIKEN_BASE_URL + section
 
@@ -296,43 +356,42 @@ async def scrape_politiken(
                 # Find all article links
                 for link in soup.select("a[href]"):
                     href = link.get("href", "")
-                    title = link.get_text(strip=True)
 
-                    if not href or not title:
-                        continue
-                    if "art" not in href:  # Only want articles
+                    if not href or "art" not in href:  # Only want articles
                         continue
 
                     full_url = urljoin(POLITIKEN_BASE_URL, href)
+                    normalized_url = normalize_url(full_url)
 
-                    # Find teaser text in same article block
-                    teaser = ""
-                    parent_article = link.find_parent("article")
-                    if parent_article:
-                        teaser_tag = parent_article.find("p")
-                        if teaser_tag:
-                            teaser = teaser_tag.get_text(strip=True)
-
-                    # Check for keyword match using regex word boundaries
-                    text_to_search = f"{title} {teaser}"
-                    if keyword_matches_text(patterns, text_to_search):
-                        article = {
-                            "title": title,
-                            "link": full_url,
-                            "published_parsed": since.timetuple(),
-                            "platform": "Politiken",
-                            "content_teaser": teaser
-                        }
-                        articles.append(article)
-                        print(f"📰 Politiken match: {title}")
-
-                        if len(articles) >= max_articles:
-                            return articles
+                    # Avoid duplicates
+                    if normalized_url not in discovered_urls:
+                        discovered_urls.add(normalized_url)
 
             except Exception as e:
-                print(f"⚠️ Politiken section {section} failed: {e}")
+                print(f"   ⚠️ Section {section} failed: {e}")
                 continue
 
+        print(f"   ✅ Discovered {len(discovered_urls)} unique article URLs")
+
+    # Phase 2: Extraction - Scrape each URL using unified method
+    print("🔍 Politiken: Starting extraction phase...")
+    articles = []
+
+    for article_url in discovered_urls:
+        if len(articles) >= max_articles:
+            break
+
+        try:
+            # Use the unified extraction method (config-aware)
+            article = await _scrape_article_content(article_url, keywords)
+            if article:
+                articles.append(article)
+
+        except Exception as e:
+            print(f"   ⚠️ Failed to extract {article_url}: {e}")
+            continue
+
+    print(f"✅ Politiken: Found {len(articles)} matching articles")
     return articles
 
 
@@ -342,15 +401,23 @@ async def scrape_dr(
 ) -> List[Dict]:
     """
     Scrape DR RSS feeds for articles matching keywords.
-    feedparser is sync, so we run it in a thread pool.
+
+    Architecture:
+    - Phase 1 (Discovery): Find article URLs from RSS feeds
+    - Phase 2 (Extraction): Use _scrape_article_content for each URL
+      (which uses database configs if available)
+
+    This method is now config-agnostic - all parsing logic happens
+    in the unified _scrape_article_content method.
     """
     if not keywords:
         return []
 
-    patterns = compile_keyword_patterns(keywords)
-    articles = []
+    print("🔍 DR: Starting discovery phase (RSS)...")
+    discovered_urls = []
     since = datetime.now(timezone.utc) - timedelta(hours=24)
 
+    # Phase 1: Discovery - Find article URLs from RSS feeds
     for feed_url in DR_FEEDS:
         try:
             # feedparser is synchronous, run in executor
@@ -358,41 +425,50 @@ async def scrape_dr(
             feed = await loop.run_in_executor(None, feedparser.parse, feed_url)
 
             for entry in feed.entries:
-                title = getattr(entry, "title", "")
-                desc = getattr(entry, "description", "")
                 link = getattr(entry, "link", None)
-                published = None
 
-                # Parse published date
+                if not link:
+                    continue
+
+                # Parse published date to filter old articles
+                published = None
                 if hasattr(entry, "published_parsed") and entry.published_parsed:
                     published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
-
-                if not link or not title:
-                    continue
 
                 # Skip if too old
                 if published and published < since:
                     continue
 
-                # Check keyword match using regex
-                text_to_search = f"{title} {desc}"
-                if keyword_matches_text(patterns, text_to_search):
-                    articles.append({
-                        "title": title,
-                        "link": link,
-                        "published_parsed": published.timetuple() if published else since.timetuple(),
-                        "platform": "DR",
-                        "content_teaser": desc
-                    })
-                    print(f"📰 DR match: {title}")
-
-                    if len(articles) >= max_articles:
-                        return articles
+                # Normalize and avoid duplicates
+                normalized_url = normalize_url(link)
+                if normalized_url not in discovered_urls:
+                    discovered_urls.append(normalized_url)
 
         except Exception as e:
-            print(f"⚠️ DR feed {feed_url} failed: {e}")
+            print(f"   ⚠️ Feed {feed_url} failed: {e}")
             continue
 
+    print(f"   ✅ Discovered {len(discovered_urls)} recent article URLs from RSS")
+
+    # Phase 2: Extraction - Scrape each URL using unified method
+    print("🔍 DR: Starting extraction phase...")
+    articles = []
+
+    for article_url in discovered_urls:
+        if len(articles) >= max_articles:
+            break
+
+        try:
+            # Use the unified extraction method (config-aware)
+            article = await _scrape_article_content(article_url, keywords)
+            if article:
+                articles.append(article)
+
+        except Exception as e:
+            print(f"   ⚠️ Failed to extract {article_url}: {e}")
+            continue
+
+    print(f"✅ DR: Found {len(articles)} matching articles")
     return articles
 
 

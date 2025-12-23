@@ -9,6 +9,7 @@ class SourceConfigBase(BaseModel):
     title_selector: Optional[str] = Field(None, description="CSS selector for article title", max_length=500)
     content_selector: Optional[str] = Field(None, description="CSS selector for article content", max_length=500)
     date_selector: Optional[str] = Field(None, description="CSS selector for publication date", max_length=500)
+    search_url_pattern: Optional[str] = Field(None, description="URL pattern for searching. Use {keyword} as placeholder (e.g., https://domain.com/search?q={keyword})", max_length=500)
 
     @field_validator('domain')
     @classmethod
@@ -40,6 +41,7 @@ class SourceConfigUpdate(BaseModel):
     title_selector: Optional[str] = Field(None, max_length=500)
     content_selector: Optional[str] = Field(None, max_length=500)
     date_selector: Optional[str] = Field(None, max_length=500)
+    search_url_pattern: Optional[str] = Field(None, max_length=500)
 
 
 class SourceConfigResponse(SourceConfigBase):
@@ -74,5 +76,6 @@ class SourceConfigAnalysisResponse(BaseModel):
     title_selector: Optional[str] = None
     content_selector: Optional[str] = None
     date_selector: Optional[str] = None
+    search_url_pattern: Optional[str] = None
     confidence: str = Field(default="low", description="Confidence level: low, medium, high")
     message: str = Field(default="Analysis completed", description="Human-readable message")

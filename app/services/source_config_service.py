@@ -49,20 +49,21 @@ class SourceConfigService:
 
     async def analyze_url(self, url: str) -> SourceConfigAnalysisResponse:
         """
-        Analyze a URL to extract CSS selectors for scraping.
+        Analyze a URL to extract CSS selectors and search patterns.
 
         Workflow:
-        1. Fetch raw HTML from the URL
-        2. Analyze HTML structure
-        3. Use AI/heuristics to suggest selectors
-        4. Save configuration to database
-        5. Return suggested selectors
+        1. Fetch raw HTML from the article URL
+        2. Extract root domain and fetch homepage HTML
+        3. Use AI to analyze both article and homepage
+        4. Suggest selectors (title, content, date) + search URL pattern
+        5. Save configuration to database
+        6. Return suggested configuration
 
         Args:
-            url: The URL to analyze
+            url: The article URL to analyze
 
         Returns:
-            SourceConfigAnalysisResponse with suggested selectors
+            SourceConfigAnalysisResponse with suggested selectors and search pattern
         """
         # Extract domain from URL
         parsed = urlparse(url)
@@ -71,19 +72,31 @@ class SourceConfigService:
         if domain.startswith('www.'):
             domain = domain[4:]
 
+        # Construct root domain URL
+        root_url = f"{parsed.scheme}://{parsed.netloc}"
+
         try:
-            # Step 1: Fetch raw HTML
-            html_content = await self._fetch_html(url)
+            # Step 1: Fetch article HTML
+            article_html = await self._fetch_html(url)
 
-            # Step 2: Analyze and suggest selectors
-            suggested_selectors = await self._suggest_selectors_with_llm(html_content, url)
+            # Step 2: Fetch homepage HTML for search pattern detection
+            homepage_html = await self._fetch_html(root_url)
 
-            # Step 3: Save to database
+            # Step 3: Analyze both HTMLs with AI
+            analysis_result = await self._suggest_selectors_with_llm(
+                article_html=article_html,
+                homepage_html=homepage_html,
+                article_url=url,
+                root_url=root_url
+            )
+
+            # Step 4: Save to database
             config_data = SourceConfigCreate(
                 domain=domain,
-                title_selector=suggested_selectors.get('title_selector'),
-                content_selector=suggested_selectors.get('content_selector'),
-                date_selector=suggested_selectors.get('date_selector')
+                title_selector=analysis_result.get('title_selector'),
+                content_selector=analysis_result.get('content_selector'),
+                date_selector=analysis_result.get('date_selector'),
+                search_url_pattern=analysis_result.get('search_url_pattern')
             )
 
             saved_config = await self.crud.create_or_update_source_config(config_data)
@@ -91,19 +104,21 @@ class SourceConfigService:
             if saved_config:
                 return SourceConfigAnalysisResponse(
                     domain=domain,
-                    title_selector=suggested_selectors.get('title_selector'),
-                    content_selector=suggested_selectors.get('content_selector'),
-                    date_selector=suggested_selectors.get('date_selector'),
-                    confidence=suggested_selectors.get('confidence', 'medium'),
+                    title_selector=analysis_result.get('title_selector'),
+                    content_selector=analysis_result.get('content_selector'),
+                    date_selector=analysis_result.get('date_selector'),
+                    search_url_pattern=analysis_result.get('search_url_pattern'),
+                    confidence=analysis_result.get('confidence', 'medium'),
                     message=f"Configuration saved for {domain}"
                 )
             else:
                 return SourceConfigAnalysisResponse(
                     domain=domain,
-                    title_selector=suggested_selectors.get('title_selector'),
-                    content_selector=suggested_selectors.get('content_selector'),
-                    date_selector=suggested_selectors.get('date_selector'),
-                    confidence=suggested_selectors.get('confidence', 'low'),
+                    title_selector=analysis_result.get('title_selector'),
+                    content_selector=analysis_result.get('content_selector'),
+                    date_selector=analysis_result.get('date_selector'),
+                    search_url_pattern=analysis_result.get('search_url_pattern'),
+                    confidence=analysis_result.get('confidence', 'low'),
                     message=f"Failed to save configuration for {domain}"
                 )
 
@@ -134,19 +149,28 @@ class SourceConfigService:
             response.raise_for_status()
             return response.text
 
-    async def _suggest_selectors_with_llm(self, html: str, url: str) -> Dict[str, Optional[str]]:
+    async def _suggest_selectors_with_llm(
+        self,
+        article_html: str,
+        homepage_html: str,
+        article_url: str,
+        root_url: str
+    ) -> Dict[str, Optional[str]]:
         """
-        Analyze HTML and suggest CSS selectors using DeepSeek AI.
+        Analyze article and homepage HTML using DeepSeek AI.
 
-        This method uses DeepSeek's LLM to intelligently analyze HTML structure
-        and suggest the most robust CSS selectors for scraping news articles.
+        This method uses DeepSeek's LLM to:
+        1. Suggest CSS selectors for article content (from article HTML)
+        2. Detect search URL pattern (from homepage HTML)
 
         Args:
-            html: Raw HTML content
-            url: Original URL (for context)
+            article_html: Raw HTML from the article page
+            homepage_html: Raw HTML from the homepage
+            article_url: The article URL (for context)
+            root_url: The root domain URL (for context)
 
         Returns:
-            Dictionary with suggested selectors and confidence level
+            Dictionary with suggested selectors, search pattern, and confidence level
         """
         try:
             # Initialize DeepSeek client (OpenAI-compatible API)
@@ -155,38 +179,57 @@ class SourceConfigService:
                 base_url="https://api.deepseek.com"
             )
 
-            # Truncate HTML to avoid token limits (~15k chars = ~3750 tokens)
-            # Keep the beginning (usually has header/meta) and middle (content)
-            html_length = len(html)
-            if html_length > 15000:
-                # Take first 7500 chars and middle 7500 chars
-                html_snippet = html[:7500] + "\n\n... [truncated] ...\n\n" + html[html_length//2:html_length//2 + 7500]
+            # Truncate HTMLs to avoid token limits
+            # Article HTML: Keep beginning and middle (~10k chars)
+            article_length = len(article_html)
+            if article_length > 10000:
+                article_snippet = article_html[:5000] + "\n\n... [article truncated] ...\n\n" + article_html[article_length//2:article_length//2 + 5000]
             else:
-                html_snippet = html
+                article_snippet = article_html
+
+            # Homepage HTML: Keep beginning only (~5k chars) - we mainly need the header/nav
+            homepage_snippet = homepage_html[:5000]
 
             # Prepare the prompt
-            system_prompt = """You are an expert web scraper and HTML analyst. Your task is to identify the most robust CSS selectors for extracting content from news articles.
+            system_prompt = """You are an expert web scraper and HTML analyst. Your task is to:
+1. Identify CSS selectors for extracting content from news articles
+2. Detect the search URL pattern from the homepage
 
 Return ONLY a valid JSON object with these keys:
 - title_selector: CSS selector for the article title
 - content_selector: CSS selector for the article body/content
 - date_selector: CSS selector for the publication date
+- search_url_pattern: The search URL with {keyword} as placeholder
 
-Guidelines:
+Guidelines for CSS Selectors:
 1. Prefer specific selectors (e.g., "article h1.title") over generic ones
 2. Use semantic HTML tags when available (article, time, etc.)
 3. Look for Schema.org attributes (itemprop="headline", etc.)
 4. Avoid overly specific selectors that might break easily
 5. Return null if you cannot find a reliable selector
 
+Guidelines for Search Pattern:
+1. Look for <form> tags with action attributes containing "search", "søg", "find"
+2. Look for <input> tags with type="search" or name="q", "query", "søg"
+3. Construct a URL pattern like: https://domain.com/search?q={keyword}
+4. If no search form is found, look for RSS feed links and return those
+5. Return null if no search mechanism is found
+
 Do NOT include markdown formatting or explanations. Return ONLY the JSON object."""
 
-            user_prompt = f"""Analyze this HTML from {url} and suggest CSS selectors:
+            user_prompt = f"""Analyze these HTMLs and suggest configuration:
 
-HTML:
-{html_snippet}"""
+ARTICLE PAGE ({article_url}):
+{article_snippet}
 
-            print(f"🤖 Calling DeepSeek AI to analyze {url}...")
+HOMEPAGE ({root_url}):
+{homepage_snippet}
+
+Extract:
+1. CSS selectors from the ARTICLE PAGE
+2. Search URL pattern from the HOMEPAGE"""
+
+            print(f"🤖 Calling DeepSeek AI to analyze {article_url}...")
 
             # Call DeepSeek API
             response = await client.chat.completions.create(
@@ -212,8 +255,8 @@ HTML:
             # Parse JSON
             selectors = json.loads(ai_response)
 
-            # Validate selectors by testing them against the HTML
-            soup = BeautifulSoup(html, 'lxml')
+            # Validate selectors by testing them against the article HTML
+            soup = BeautifulSoup(article_html, 'lxml')
             validated_selectors = {}
             validation_count = 0
 
@@ -236,6 +279,20 @@ HTML:
                 else:
                     validated_selectors[key] = None
 
+            # Validate search URL pattern
+            search_pattern = selectors.get('search_url_pattern')
+            if search_pattern:
+                # Basic validation: should contain {keyword} placeholder
+                if '{keyword}' in search_pattern:
+                    validated_selectors['search_url_pattern'] = search_pattern
+                    print(f"   ✅ search_url_pattern: {search_pattern}")
+                else:
+                    validated_selectors['search_url_pattern'] = None
+                    print(f"   ❌ search_url_pattern: {search_pattern} (missing {{keyword}} placeholder)")
+            else:
+                validated_selectors['search_url_pattern'] = None
+                print(f"   ⚠️ search_url_pattern: Not detected")
+
             # Determine confidence based on validation
             if validation_count == 3:
                 confidence = "high"
@@ -254,27 +311,29 @@ HTML:
         except json.JSONDecodeError as e:
             print(f"❌ Failed to parse DeepSeek response as JSON: {e}")
             # Fallback to heuristic analysis
-            return await self._fallback_heuristic_analysis(html, url)
+            return await self._fallback_heuristic_analysis(article_html, article_url)
 
         except Exception as e:
             print(f"❌ DeepSeek API error: {e}")
             # Fallback to heuristic analysis
-            return await self._fallback_heuristic_analysis(html, url)
+            return await self._fallback_heuristic_analysis(article_html, article_url)
 
-    async def _fallback_heuristic_analysis(self, html: str, url: str) -> Dict[str, Optional[str]]:
+    async def _fallback_heuristic_analysis(self, article_html: str, article_url: str) -> Dict[str, Optional[str]]:
         """
         Fallback method using heuristic analysis when AI fails.
 
+        Note: This fallback cannot detect search_url_pattern, so it returns None.
+
         Args:
-            html: Raw HTML content
-            url: Original URL
+            article_html: Raw HTML content from article page
+            article_url: Original article URL
 
         Returns:
             Dictionary with suggested selectors and confidence
         """
-        print(f"🔄 Falling back to heuristic analysis for {url}")
+        print(f"🔄 Falling back to heuristic analysis for {article_url}")
 
-        soup = BeautifulSoup(html, 'lxml')
+        soup = BeautifulSoup(article_html, 'lxml')
 
         # Heuristic 1: Look for common article title patterns
         title_selector = None
@@ -333,12 +392,14 @@ HTML:
         print(f"   Title: {title_selector}")
         print(f"   Content: {content_selector}")
         print(f"   Date: {date_selector}")
+        print(f"   Search Pattern: None (heuristic cannot detect)")
         print(f"   Confidence: {confidence}")
 
         return {
             'title_selector': title_selector,
             'content_selector': content_selector,
             'date_selector': date_selector,
+            'search_url_pattern': None,  # Cannot be determined heuristically
             'confidence': confidence
         }
 
