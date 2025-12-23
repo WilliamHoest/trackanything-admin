@@ -80,8 +80,8 @@ async def scrape_brand(
                 errors=["No keywords configured for this brand"]
             )
         
-        # Fetch mentions from all sources
-        mentions = fetch_all_mentions(keyword_list)
+        # Fetch mentions from all sources (async with parallel execution)
+        mentions = await fetch_all_mentions(keyword_list)
         
         errors = []
         mentions_saved = 0
