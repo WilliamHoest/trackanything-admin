@@ -1,11 +1,23 @@
-import httpx
-import json
-import asyncio
-from typing import AsyncGenerator, List, Dict, Any
-from app.core.config import settings
+"""
+AI Persona System Prompts for Atlas Intelligence Assistant
+
+Defines 5 different AI personas with specialized expertise.
+"""
+
+from typing import Dict
+from .context import UserContext
+
 
 def get_persona_prompt(persona: str = "general") -> str:
-    """Get the AI persona prompt based on user's preference"""
+    """Get the AI persona prompt based on user's preference
+
+    Args:
+        persona: One of 'general', 'pr_expert', 'policy_expert',
+                'market_research', 'crisis_management'
+
+    Returns:
+        System prompt string for the specified persona
+    """
     personas = {
         'pr_expert': """You are Atlas, an AI Intelligence Assistant specialized in PR and Communications. You're an expert in:
 - Media relations and press strategy
@@ -51,26 +63,25 @@ Focus on identifying potential crises, assessing risks, and providing actionable
 
 Be proactive, insightful, and always suggest concrete next steps. Look for patterns, trends, and opportunities in the data."""
     }
-    
+
     return personas.get(persona, personas['general'])
 
-async def get_ai_chat_response(
-    message: str, 
-    conversation_history: List[Dict[str, str]],
-    context: Dict[str, Any]
-) -> AsyncGenerator[str, None]:
-    """Generate AI chat response with streaming using Supabase context"""
-    
-    # Get user's persona preference (for now we'll use general, but this can be extended)
-    user_persona = "general"  # This could come from user profile in the future
-    
-    # Extract mentions from context
-    mentions = context.get("recent_mentions", [])
-    
-    # Build the system prompt
-    context_message = get_persona_prompt(user_persona)
-    
-    context_message += """
+
+def build_context_message(persona: str, context: UserContext) -> str:
+    """Build complete system prompt with persona + user context
+
+    Args:
+        persona: The persona type to use
+        context: User context data
+
+    Returns:
+        Complete system prompt with persona instructions and context data
+    """
+    # Start with persona prompt
+    prompt = get_persona_prompt(persona)
+
+    # Add general instructions
+    prompt += """
 
 You have access to the client's structured brand monitoring data: news articles, Reddit threads, YouTube content, and more — categorized by brand, topic, platform, and date.
 
@@ -78,10 +89,17 @@ Your role is to identify patterns, explain context, highlight what matters, and 
 
 Be conversational yet professional, proactive in suggesting insights, and always look for actionable opportunities. When providing analysis, include specific recommendations and next steps.
 
+You have access to tools that can help you:
+- Search the web for current information beyond the monitoring data
+- Extract content from specific URLs for detailed analysis
+- Analyze mentions in depth for patterns and trends
+
+Use these tools when they would provide value, but prioritize analyzing the user's existing monitoring data first.
+
 IMPORTANT: You may contain errors and your responses are informational only. Users should verify important information and consult with human experts for critical decisions."""
 
     # Add user context if available
-    user_profile = context.get("user_profile", {})
+    user_profile = context.user_profile
     if user_profile.get("name") or user_profile.get("company_name"):
         context_parts = []
         if user_profile.get("name"):
@@ -91,84 +109,37 @@ IMPORTANT: You may contain errors and your responses are informational only. Use
         if user_profile.get("email"):
             context_parts.append(f"Contact: {user_profile['email']}")
 
-        context_message += f"""
+        prompt += f"""
 
 USER CONTEXT:
 {chr(10).join(context_parts)}
 
 Use this information to provide more personalized and relevant insights that align with the user's business context, industry, and specific needs."""
 
-    # Add monitoring data context
+    # Add monitoring data context (top 5 mentions for immediate context)
+    mentions = context.recent_mentions
     if mentions:
         unread_count = sum(1 for m in mentions if not m.get("read_status", False))
-        brands = context.get("brands", [])
-        
-        context_message += f"""
+        brands = context.brands
+
+        prompt += f"""
 
 CURRENT MONITORING STATUS:
-- Total recent mentions: {len(mentions)}
+- Total recent mentions: {context.recent_mentions_count}
 - Unread mentions: {unread_count}
 - Monitored brands: {', '.join([b['name'] for b in brands])}
 
-RECENT MONITORING DATA:
+RECENT MONITORING DATA (Top 5 - use analyze_mentions tool for full details):
 """
-        for i, mention in enumerate(mentions, 1):
+        for i, mention in enumerate(mentions[:5], 1):
             status = "[READ]" if mention.get("read_status") else "[UNREAD]"
             brand_name = mention.get("brands", {}).get("name", "N/A") if mention.get("brands") else "N/A"
             topic_name = mention.get("topics", {}).get("name", "N/A") if mention.get("topics") else "N/A"
             platform_name = mention.get("platforms", {}).get("name", "N/A") if mention.get("platforms") else "N/A"
             published_date = mention.get("published_at", "N/A")
-            
-            context_message += f"{i}. {status} Brand: {brand_name}, Topic: {topic_name}, Platform: {platform_name}, Date: {published_date}, Content: \"{mention.get('caption', '')}\"\n"
-            
-        context_message += "\nUse this monitoring data to provide insights, identify patterns, suggest strategic actions, and highlight urgent items when relevant to the user's questions. Look for trends, sentiment shifts, and opportunities."
 
-    # Build messages array
-    messages = [
-        {"role": "system", "content": context_message},
-        # Add conversation history (limit to last 6 messages for performance)
-        *conversation_history[-6:],
-        {"role": "user", "content": message}
-    ]
+            prompt += f"{i}. {status} Brand: {brand_name}, Topic: {topic_name}, Platform: {platform_name}, Date: {published_date}, Content: \"{mention.get('caption', '')}\"\n"
 
-    # Make the API call to DeepSeek
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            async with client.stream(
-                'POST',
-                'https://api.deepseek.com/chat/completions',
-                headers={
-                    'Authorization': f'Bearer {settings.deepseek_api_key}',
-                    'Content-Type': 'application/json',
-                },
-                json={
-                    'model': 'deepseek-chat',
-                    'messages': messages,
-                    'temperature': 0.7,
-                    'max_tokens': 800,
-                    'stream': True,
-                }
-            ) as response:
-                if response.status_code != 200:
-                    error_text = await response.aread()
-                    raise Exception(f"DeepSeek API error: {response.status_code} - {error_text}")
-                
-                async for line in response.aiter_lines():
-                    if line.startswith('data: '):
-                        data = line[6:].strip()
-                        
-                        if data == '[DONE]':
-                            break
-                            
-                        try:
-                            parsed = json.loads(data)
-                            content = parsed.get('choices', [{}])[0].get('delta', {}).get('content')
-                            
-                            if content:
-                                yield content
-                        except json.JSONDecodeError:
-                            # Skip invalid JSON chunks
-                            continue
-                            
-        except Exception as e:
-            yield f"Error: {str(e)}"
+        prompt += "\nUse this monitoring data to provide insights, identify patterns, suggest strategic actions, and highlight urgent items when relevant to the user's questions. Look for trends, sentiment shifts, and opportunities."
+
+    return prompt

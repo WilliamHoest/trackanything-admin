@@ -7,7 +7,7 @@ from app.security.auth import get_current_user
 from app.core.config import settings
 from app.core.supabase_db import get_supabase_crud
 from app.crud.supabase_crud import SupabaseCRUD
-from app.services.ai_service import get_ai_chat_response
+from app.services.ai import UserContext, stream_chat_response
 import json
 
 router = APIRouter()
@@ -65,24 +65,28 @@ async def stream_chat(
         # Get user's context data (brands, recent mentions, etc.)
         brands = await crud.get_brands_by_profile(current_user.id)
         recent_mentions = await crud.get_mentions_by_profile(
-            current_user.id, 
-            skip=0, 
+            current_user.id,
+            skip=0,
             limit=50
         )
-        
-        # Build context for AI
-        context = {
-            "user_profile": {
+
+        # Build context for AI with UserContext model (PydanticAI)
+        context = UserContext(
+            user_id=str(current_user.id),
+            user_profile={
                 "name": profile.get("name", ""),
                 "email": profile.get("email", ""),
                 "phone_number": profile.get("phone_number", ""),
                 "company_name": profile.get("company_name", ""),
                 "contact_email": profile.get("contact_email", "")
             },
-            "brands": [{"id": b["id"], "name": b["name"]} for b in brands],
-            "recent_mentions_count": len(recent_mentions),
-            "recent_mentions": recent_mentions[:10]  # Only send top 10 for context
-        }
+            brands=[{"id": b["id"], "name": b["name"]} for b in brands],
+            recent_mentions=recent_mentions[:50],  # Increased from 10 to 50 for tool access
+            recent_mentions_count=len(recent_mentions)
+        )
+
+        # Get persona from profile (future extension)
+        persona = profile.get("ai_persona", "general")
         
         # 3. Stream and Accumulate for Persistence
         async def stream_with_persistence():
@@ -95,7 +99,7 @@ async def stream_chat(
             # but since we can't send JSON + Stream easily, we just stream the text.
             # The client will have to refresh the chat list to see the new chat.
             
-            async for chunk in get_ai_chat_response(request.message, conversation_history, context):
+            async for chunk in stream_chat_response(request.message, conversation_history, context, persona):
                 full_response += chunk
                 yield chunk
             
@@ -139,24 +143,28 @@ async def chat(
         # Get user's context data
         brands = await crud.get_brands_by_profile(current_user.id)
         recent_mentions = await crud.get_mentions_by_profile(
-            current_user.id, 
-            skip=0, 
+            current_user.id,
+            skip=0,
             limit=20
         )
-        
-        # Build context for AI
-        context = {
-            "user_profile": {
+
+        # Build context for AI with UserContext model (PydanticAI)
+        context = UserContext(
+            user_id=str(current_user.id),
+            user_profile={
                 "name": profile.get("name", ""),
                 "email": profile.get("email", ""),
                 "phone_number": profile.get("phone_number", ""),
                 "company_name": profile.get("company_name", ""),
                 "contact_email": profile.get("contact_email", "")
             },
-            "brands": [{"id": b["id"], "name": b["name"]} for b in brands],
-            "recent_mentions_count": len(recent_mentions),
-            "recent_mentions": recent_mentions[:5]  # Limited context for non-streaming
-        }
+            brands=[{"id": b["id"], "name": b["name"]} for b in brands],
+            recent_mentions=recent_mentions[:20],  # Limited context for non-streaming
+            recent_mentions_count=len(recent_mentions)
+        )
+
+        # Get persona from profile (future extension)
+        persona = profile.get("ai_persona", "general")
         
         # Convert conversation history
         conversation_history = [
@@ -166,10 +174,10 @@ async def chat(
         
         # Get AI response (collect all chunks)
         response_chunks = []
-        async for chunk in get_ai_chat_response(request.message, conversation_history, context):
+        async for chunk in stream_chat_response(request.message, conversation_history, context, persona):
             if chunk.strip():
                 response_chunks.append(chunk)
-        
+
         full_response = "".join(response_chunks)
         
         return ChatResponse(content=full_response)
