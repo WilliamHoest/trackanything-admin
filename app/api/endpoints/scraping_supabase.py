@@ -120,6 +120,7 @@ async def scrape_brand(
                     "caption": mention.get("title", ""),
                     "post_link": mention.get("link", ""),
                     "published_at": published_date.isoformat(),
+                    "content_teaser": mention.get("content_teaser"),
                     "platform_id": platform["id"],
                     "brand_id": brand_id,
                     "topic_id": best_topic["id"],

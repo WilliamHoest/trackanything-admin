@@ -6,6 +6,7 @@ class MentionBase(BaseModel):
     caption: str
     post_link: str
     published_at: Optional[datetime] = None
+    content_teaser: Optional[str] = None
     read_status: bool = False
     notified_status: bool = False
 
@@ -16,6 +17,7 @@ class MentionCreate(MentionBase):
 
 class MentionUpdate(BaseModel):
     caption: Optional[str] = None
+    content_teaser: Optional[str] = None
     read_status: Optional[bool] = None
     notified_status: Optional[bool] = None
 

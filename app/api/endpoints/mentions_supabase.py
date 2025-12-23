@@ -4,10 +4,11 @@ from app.security.auth import get_current_user
 from app.core.config import settings
 from app.core.supabase_db import get_supabase_crud
 from app.crud.supabase_crud import SupabaseCRUD
+from app.schemas.mention import MentionWithDetails
 
 router = APIRouter()
 
-@router.get("/", response_model=List[dict])
+@router.get("/", response_model=List[MentionWithDetails])
 async def get_mentions(
     skip: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),

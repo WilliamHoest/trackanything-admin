@@ -189,9 +189,9 @@ class SupabaseCRUD:
             # Build query for mentions
             query = self.supabase.table("mentions").select("""
                 *,
-                brands(name),
-                topics(name),
-                platforms(name, logo_url)
+                brands(*),
+                topics(*),
+                platforms(*)
             """).in_("brand_id", user_brand_ids)
             
             # Apply additional filters
@@ -304,6 +304,7 @@ class SupabaseCRUD:
                 "caption": mention_data.get("caption", ""),
                 "post_link": mention_data.get("post_link", ""),
                 "published_at": mention_data.get("published_at", datetime.utcnow().isoformat()),
+                "content_teaser": mention_data.get("content_teaser"),
                 "platform_id": mention_data.get("platform_id"),
                 "brand_id": mention_data.get("brand_id"),
                 "topic_id": mention_data.get("topic_id"),

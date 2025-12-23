@@ -66,7 +66,8 @@ def crawl_politiken(keywords, max_articles=50):
                         "title": title,
                         "link": full_url,
                         "published_parsed": since.timetuple(),
-                        "platform": "Politiken"
+                        "platform": "Politiken",
+                        "content_teaser": teaser
                     }
                     all_articles.append(article)
                     print(f"📰 Politiken match: {title} ({full_url})")
@@ -124,7 +125,8 @@ def crawl_dr(keywords, max_articles=50):
                         "title": title,
                         "link": link,
                         "published_parsed": published.timetuple() if published else since.timetuple(),
-                        "platform": "DR"
+                        "platform": "DR",
+                        "content_teaser": desc
                     })
                     print(f"📰 DR match: {title} ({link})")
                     break
@@ -182,7 +184,8 @@ def fetch_gnews_articles(keywords: List[str]) -> List[Dict]:
                     "title": a.get("title", "Uden titel"),
                     "link": a["url"],
                     "published_parsed": parsed.timetuple(),
-                    "platform": "GNews"
+                    "platform": "GNews",
+                    "content_teaser": a.get("description", "")
                 })
                 print(f"🔍 GNews match: {a.get('title', 'Uden titel')} ({a['url']})")
             except Exception as e:
@@ -253,7 +256,8 @@ def fetch_serpapi_articles(keywords: List[str]) -> List[Dict]:
                         "title": item["title"],
                         "link": item["link"],
                         "published_parsed": parsed.timetuple(),
-                        "platform": "SerpApi"
+                        "platform": "SerpApi",
+                        "content_teaser": item.get("snippet") or item.get("description", "")
                     }
                     entries.append(entry)
                     print(f"🔎 SerpAPI match: {item['title']} ({item['link']})")
