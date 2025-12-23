@@ -8,6 +8,7 @@ from app.schemas import (
     mention as mention_schemas,
     platform as platform_schemas,
     profile as profile_schemas,
+    source_config as source_config_schemas,
 )
 import uuid
 from datetime import datetime
@@ -295,6 +296,61 @@ class SupabaseCRUD:
         except Exception as e:
             print(f"Error creating platform: {e}")
             return None
+
+    # Source Config CRUD
+    async def get_source_config_by_domain(self, domain: str) -> Optional[Dict[str, Any]]:
+        """Get source configuration by domain"""
+        try:
+            result = self.supabase.table("source_configs").select("*").eq("domain", domain).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            print(f"Error getting source config by domain: {e}")
+            return None
+
+    async def get_all_source_configs(self) -> List[Dict[str, Any]]:
+        """Get all source configurations"""
+        try:
+            result = self.supabase.table("source_configs").select("*").order("created_at", desc=True).execute()
+            return result.data or []
+        except Exception as e:
+            print(f"Error getting all source configs: {e}")
+            return []
+
+    async def create_or_update_source_config(self, config: source_config_schemas.SourceConfigCreate) -> Optional[Dict[str, Any]]:
+        """Create or update source configuration (upsert based on domain)"""
+        try:
+            # Check if config already exists for this domain
+            existing = await self.get_source_config_by_domain(config.domain)
+
+            if existing:
+                # Update existing config
+                data = config.model_dump(exclude_unset=True, exclude_none=True)
+                result = self.supabase.table("source_configs").update(data).eq("domain", config.domain).execute()
+                return result.data[0] if result.data else None
+            else:
+                # Create new config
+                data = {
+                    "domain": config.domain,
+                    "title_selector": config.title_selector,
+                    "content_selector": config.content_selector,
+                    "date_selector": config.date_selector,
+                    "created_at": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.utcnow().isoformat()
+                }
+                result = self.supabase.table("source_configs").insert(data).execute()
+                return result.data[0] if result.data else None
+        except Exception as e:
+            print(f"Error creating/updating source config: {e}")
+            return None
+
+    async def delete_source_config_by_domain(self, domain: str) -> bool:
+        """Delete source configuration by domain"""
+        try:
+            result = self.supabase.table("source_configs").delete().eq("domain", domain).execute()
+            return len(result.data) > 0
+        except Exception as e:
+            print(f"Error deleting source config: {e}")
+            return False
 
     # Mention creation for scraping
     async def create_mention(self, mention_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:

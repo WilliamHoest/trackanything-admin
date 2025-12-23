@@ -1,15 +1,16 @@
 from fastapi import APIRouter
 from app.api.endpoints import (
-    brands_supabase, 
-    topics_supabase, 
-    keywords_supabase, 
-    mentions_supabase, 
+    brands_supabase,
+    topics_supabase,
+    keywords_supabase,
+    mentions_supabase,
     users_supabase,
     scraping_supabase,
     digests_supabase,
     chat_supabase,
     chat_history,
-    admin_supabase
+    admin_supabase,
+    admin_sources
 )
 
 api_router = APIRouter()
@@ -25,3 +26,4 @@ api_router.include_router(digests_supabase.router, prefix="/digests", tags=["dig
 api_router.include_router(chat_supabase.router, prefix="/chat", tags=["chat"])
 api_router.include_router(chat_history.router, prefix="/chats", tags=["chats"])
 api_router.include_router(admin_supabase.router, prefix="/admin", tags=["admin"])
+api_router.include_router(admin_sources.router, prefix="/admin/sources", tags=["admin-sources"])

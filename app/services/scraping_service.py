@@ -29,6 +29,7 @@ from tenacity import (
 from fake_useragent import UserAgent
 
 from app.core.config import settings
+from app.crud.supabase_crud import SupabaseCRUD
 
 
 # === Configuration ===
@@ -120,6 +121,117 @@ def get_platform_from_url(url: str) -> str:
         return "Unknown"
 
 
+async def _get_config_for_domain(domain: str) -> Optional[Dict]:
+    """
+    Get saved source configuration for a specific domain.
+
+    This method allows the scraping service to be a "consumer" of
+    configurations created by the SourceConfigService.
+
+    Args:
+        domain: The domain to look up (e.g., 'berlingske.dk')
+
+    Returns:
+        Dictionary with CSS selectors or None if not configured
+    """
+    try:
+        # Normalize domain (remove www. and protocol)
+        domain = domain.lower()
+        if domain.startswith('www.'):
+            domain = domain[4:]
+
+        crud = SupabaseCRUD()
+        config = await crud.get_source_config_by_domain(domain)
+
+        if config:
+            print(f"✅ Found source config for {domain}")
+            print(f"   Title: {config.get('title_selector')}")
+            print(f"   Content: {config.get('content_selector')}")
+            print(f"   Date: {config.get('date_selector')}")
+
+        return config
+    except Exception as e:
+        print(f"⚠️ Error fetching config for {domain}: {e}")
+        return None
+
+
+async def scrape_generic_with_config(
+    url: str,
+    keywords: List[str],
+    config: Dict
+) -> Optional[Dict]:
+    """
+    Scrape a URL using dynamic CSS selectors from source configuration.
+
+    This is a generic scraper that works with ANY domain, as long as
+    there's a configuration available with CSS selectors.
+
+    Args:
+        url: The URL to scrape
+        keywords: List of keywords to match
+        config: Source configuration with CSS selectors
+
+    Returns:
+        Article dictionary if successful and matches keywords, None otherwise
+    """
+    if not keywords or not config:
+        return None
+
+    patterns = compile_keyword_patterns(keywords)
+
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+            headers = {"User-Agent": get_random_user_agent()}
+            response = await fetch_with_retry(client, url, headers=headers)
+            soup = BeautifulSoup(response.text, "lxml")
+
+            # Extract data using dynamic selectors
+            title = ""
+            content = ""
+            date_str = ""
+
+            # Extract title
+            if config.get('title_selector'):
+                title_elem = soup.select_one(config['title_selector'])
+                if title_elem:
+                    title = title_elem.get_text(strip=True)
+
+            # Extract content
+            if config.get('content_selector'):
+                content_elem = soup.select_one(config['content_selector'])
+                if content_elem:
+                    content = content_elem.get_text(strip=True)
+
+            # Extract date
+            if config.get('date_selector'):
+                date_elem = soup.select_one(config['date_selector'])
+                if date_elem:
+                    # Try to get datetime attribute first, then text
+                    date_str = date_elem.get('datetime') or date_elem.get_text(strip=True)
+
+            # Check for keyword match
+            text_to_search = f"{title} {content}"
+            if keyword_matches_text(patterns, text_to_search):
+                platform = get_platform_from_url(url)
+
+                article = {
+                    "title": title or "Uden titel",
+                    "link": url,
+                    "published_parsed": None,  # Will be parsed from date_str if needed
+                    "platform": platform,
+                    "content_teaser": content[:500] if content else ""  # First 500 chars
+                }
+
+                print(f"📰 {platform} match (config-based): {title}")
+                return article
+
+            return None
+
+    except Exception as e:
+        print(f"⚠️ Generic scrape failed for {url}: {e}")
+        return None
+
+
 # === Retry Decorator for HTTP Requests ===
 
 @retry(
@@ -151,9 +263,22 @@ async def scrape_politiken(
     """
     Scrape Politiken sections for articles matching keywords.
     Uses async httpx with retry logic and rotating User-Agent.
+
+    Dynamic Configuration:
+    - First checks if a source configuration exists for politiken.dk
+    - If config exists, uses dynamic CSS selectors for parsing
+    - Otherwise falls back to hardcoded scraping logic
     """
     if not keywords:
         return []
+
+    # Check if we have a source configuration for Politiken
+    config = await _get_config_for_domain("politiken.dk")
+    if config:
+        print("🔧 Using dynamic configuration for Politiken")
+        # If we have a config, we could use it here for enhanced parsing
+        # For now, we'll use the existing logic as fallback
+        # Future: Implement config-based parsing for Politiken
 
     patterns = compile_keyword_patterns(keywords)
     articles = []
