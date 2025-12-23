@@ -1,6 +1,11 @@
-import asyncio
-from app.core.supabase_client import get_supabase_admin
 import sys
+import os
+import asyncio
+
+# Add parent directory to path to allow importing app modules
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from app.core.supabase_client import get_supabase_admin
 
 async def promote_user(email: str):
     print(f"🚀 Promoting user {email} to admin...")
