@@ -30,6 +30,11 @@ from fake_useragent import UserAgent
 
 from app.core.config import settings
 from app.crud.supabase_crud import SupabaseCRUD
+from app.core.selectors import (
+    GENERIC_TITLE_SELECTORS,
+    GENERIC_CONTENT_SELECTORS,
+    GENERIC_DATE_SELECTORS
+)
 
 
 # === Configuration ===
@@ -147,7 +152,7 @@ async def _scrape_article_content(
     This method is the core of the configuration-based scraping system:
     1. Extracts domain from URL
     2. Tries to load configuration from database
-    3. If config exists, uses it for extraction
+    3. If config exists, uses it for extraction with automatic fallback
     4. If no config, falls back to generic "best guess" extraction
     5. Checks for keyword match
     6. Returns article data or None
@@ -183,59 +188,52 @@ async def _scrape_article_content(
             content = ""
             date_str = ""
 
-            if config:
-                # Use database configuration
-                print(f"   🔧 Using DB config for {domain}")
+            def try_selectors(soup_obj, selectors):
+                for selector in selectors:
+                    elem = soup_obj.select_one(selector)
+                    if elem:
+                        return elem
+                return None
 
-                # Extract title
-                if config.get('title_selector'):
-                    title_elem = soup.select_one(config['title_selector'])
-                    if title_elem:
-                        title = title_elem.get_text(strip=True)
-
-                # Extract content
-                if config.get('content_selector'):
-                    content_elem = soup.select_one(config['content_selector'])
-                    if content_elem:
-                        content = content_elem.get_text(strip=True)
-
-                # Extract date
-                if config.get('date_selector'):
-                    date_elem = soup.select_one(config['date_selector'])
-                    if date_elem:
-                        date_str = date_elem.get('datetime') or date_elem.get_text(strip=True)
-
-            else:
-                # Fallback to generic "best guess" extraction
-                print(f"   ⚙️ Using generic extraction for {domain} (no config)")
-
-                # Try common title patterns
-                title_elem = (
-                    soup.select_one('article h1') or
-                    soup.select_one('h1[itemprop="headline"]') or
-                    soup.select_one('h1.article-title') or
-                    soup.select_one('header h1') or
-                    soup.select_one('h1')
-                )
+            # === Title Extraction ===
+            if config and config.get('title_selector'):
+                title_elem = soup.select_one(config['title_selector'])
+                if title_elem:
+                    title = title_elem.get_text(strip=True)
+            
+            if not title:
+                if config and config.get('title_selector'):
+                    print(f"      ⚠️ Configured title selector '{config['title_selector']}' failed or empty. Trying fallbacks.")
+                
+                title_elem = try_selectors(soup, GENERIC_TITLE_SELECTORS)
                 if title_elem:
                     title = title_elem.get_text(strip=True)
 
-                # Try common content patterns
-                content_elem = (
-                    soup.select_one('[itemprop="articleBody"]') or
-                    soup.select_one('article .article-content') or
-                    soup.select_one('.article-body') or
-                    soup.select_one('article')
-                )
+            # === Content Extraction ===
+            if config and config.get('content_selector'):
+                content_elem = soup.select_one(config['content_selector'])
+                if content_elem:
+                    content = content_elem.get_text(strip=True)
+            
+            if not content:
+                if config and config.get('content_selector'):
+                    print(f"      ⚠️ Configured content selector '{config['content_selector']}' failed or empty. Trying fallbacks.")
+                
+                content_elem = try_selectors(soup, GENERIC_CONTENT_SELECTORS)
                 if content_elem:
                     content = content_elem.get_text(strip=True)
 
-                # Try common date patterns
-                date_elem = (
-                    soup.select_one('time[datetime]') or
-                    soup.select_one('[itemprop="datePublished"]') or
-                    soup.select_one('time.published')
-                )
+            # === Date Extraction ===
+            if config and config.get('date_selector'):
+                date_elem = soup.select_one(config['date_selector'])
+                if date_elem:
+                    date_str = date_elem.get('datetime') or date_elem.get_text(strip=True)
+            
+            if not date_str:
+                if config and config.get('date_selector'):
+                    print(f"      ⚠️ Configured date selector '{config['date_selector']}' failed or empty. Trying fallbacks.")
+                
+                date_elem = try_selectors(soup, GENERIC_DATE_SELECTORS)
                 if date_elem:
                     date_str = date_elem.get('datetime') or date_elem.get_text(strip=True)
 

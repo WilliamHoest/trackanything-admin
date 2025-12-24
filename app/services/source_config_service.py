@@ -15,7 +15,7 @@ Separation of Concerns:
 import httpx
 import json
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from typing import Dict, Optional, List
 from datetime import datetime
 from openai import AsyncOpenAI
@@ -26,6 +26,7 @@ from app.schemas.source_config import (
 )
 from app.crud.supabase_crud import SupabaseCRUD
 from app.core.config import settings
+from app.core.selectors import GENERIC_SELECTORS_MAP
 
 
 # === Configuration ===
@@ -184,13 +185,12 @@ class SourceConfigService:
 
     async def _find_article_url_from_html(self, html: str, domain: str) -> Optional[str]:
         """
-        Find ONE valid article URL from HTML using heuristics.
+        Find ONE valid article URL from HTML using strict validation.
 
         Strategy:
-        - Filter links to same domain
-        - Prefer links with numbers (dates/IDs) in path
-        - Path must be > 20 chars
-        - Skip non-article paths (search, about, login, etc.)
+        - Iterate through all links
+        - Validate each link against blacklist, domain, and path length
+        - Return first valid article URL
 
         Args:
             html: Raw HTML content
@@ -201,45 +201,52 @@ class SourceConfigService:
         """
         try:
             soup = BeautifulSoup(html, 'lxml')
+            
+            # Helper for strict validation
+            def is_valid_article_url(url: str, target_domain: str) -> bool:
+                # Substrings that invalidate a URL
+                # We use /slashes/ for short words to avoid matching substrings in valid words
+                # e.g. "tag" matches "fredag", so we use "/tag/"
+                BLACKLIST_KEYWORDS = [
+                    "e-avis", "login", "log-ind", "shop", 
+                    "abonnement", "kundeservice", "auth", ".pdf",
+                    "tilbud", "annonce", "/profile/", "/user/",
+                    "minside", "arkiv", "nyhedsbreve", "/podcast/", 
+                    "/video/", "galleri", "/play/",
+                    "/tag/", "/kategori/", "/emne/", "/tema/", "/sektion/"
+                ]
+                
+                try:
+                    parsed = urlparse(url)
+                    path = parsed.path
+                    url_lower = url.lower()
 
+                    # 1. Check Blacklist
+                    if any(keyword in url_lower for keyword in BLACKLIST_KEYWORDS):
+                        return False
+
+                    # 2. Check Domain (allow subdomains unless it's e-avis which is caught above)
+                    clean_target = target_domain.replace("www.", "")
+                    if clean_target not in parsed.netloc:
+                        return False
+
+                    # 3. Check Path Length (Articles usually have long slugs)
+                    if len(path) < 30:
+                        return False
+                        
+                    return True
+                except Exception:
+                    return False
+
+            # Iterate through all links
             for link in soup.select("a[href]"):
                 href = link.get("href", "")
                 if not href:
                     continue
 
                 full_url = urljoin(f"https://{domain}", href)
-                parsed = urlparse(full_url)
-
-                # Filter: Same domain
-                if domain not in parsed.netloc:
-                    continue
-
-                # Filter: Path length > 20
-                if len(parsed.path) < 20:
-                    continue
-
-                path_lower = parsed.path.lower()
-
-                # Skip non-article paths
-                skip_patterns = ['/search', '/kategori', '/tag', '/author', '/om-os',
-                               '/kontakt', '/cookie', '/privacy', '/login', '/signup']
-                if any(skip in path_lower for skip in skip_patterns):
-                    continue
-
-                # Prefer paths with numbers (dates/IDs)
-                if any(char.isdigit() for char in parsed.path):
-                    return full_url
-
-            # Fallback: First long path without numbers
-            for link in soup.select("a[href]"):
-                href = link.get("href", "")
-                if not href:
-                    continue
-
-                full_url = urljoin(f"https://{domain}", href)
-                parsed = urlparse(full_url)
-
-                if domain in parsed.netloc and len(parsed.path) > 30:
+                
+                if is_valid_article_url(full_url, domain):
                     return full_url
 
             return None
@@ -380,22 +387,58 @@ Extract:
 
             for key in ['title_selector', 'content_selector', 'date_selector']:
                 selector = selectors.get(key)
+                validated_selectors[key] = None # Default to None
+
+                # 1. Try AI suggestion first
                 if selector:
                     try:
-                        # Test if selector works
                         element = soup.select_one(selector)
                         if element:
                             validated_selectors[key] = selector
                             validation_count += 1
                             print(f"   ✅ {key}: {selector}")
+                            
+                            # Log preview
+                            if element.name == 'meta':
+                                text = element.get('content', '')
+                            elif key == 'date_selector' and element.has_attr('datetime'):
+                                text = element.get('datetime')
+                            else:
+                                text = element.get_text(strip=True)
+                                
+                            preview = text[:1000].replace('\n', ' ') if text else "EMPTY"
+                            print(f"      👀 Preview: \"{preview}...\"")
+                            
+                            continue # Success, move to next key
                         else:
-                            validated_selectors[key] = None
                             print(f"   ❌ {key}: {selector} (not found in HTML)")
                     except Exception as e:
-                        validated_selectors[key] = None
                         print(f"   ❌ {key}: {selector} (invalid selector: {e})")
-                else:
-                    validated_selectors[key] = None
+                
+                # 2. Try generic fallbacks if AI failed
+                print(f"   🔄 Trying fallbacks for {key}...")
+                for fallback in GENERIC_SELECTORS_MAP.get(key, []):
+                    try:
+                        element = soup.select_one(fallback)
+                        if element:
+                            validated_selectors[key] = fallback
+                            validation_count += 1
+                            print(f"   ✅ {key}: {fallback} (fallback used)")
+                            
+                            # Log preview
+                            if element.name == 'meta':
+                                text = element.get('content', '')
+                            elif key == 'date_selector' and element.has_attr('datetime'):
+                                text = element.get('datetime')
+                            else:
+                                text = element.get_text(strip=True)
+                                
+                            preview = text[:1000].replace('\n', ' ') if text else "EMPTY"
+                            print(f"      👀 Preview: \"{preview}...\"")
+                            
+                            break
+                    except:
+                        continue
 
             # Validate search URL pattern
             search_pattern = selectors.get('search_url_pattern')
