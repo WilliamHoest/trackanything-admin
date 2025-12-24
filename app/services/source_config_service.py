@@ -14,6 +14,7 @@ Separation of Concerns:
 
 import httpx
 import json
+import re
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin
 from typing import Dict, Optional, List
@@ -83,8 +84,8 @@ class SourceConfigService:
             # Step 2: Fetch homepage HTML for search pattern detection
             homepage_html = await self._fetch_html(root_url)
 
-            # Step 3: Analyze both HTMLs with AI
-            analysis_result = await self._suggest_selectors_with_llm(
+            # Step 3: Analyze structure (Standard Selectors + AI Verification)
+            analysis_result = await self._analyze_source_structure(
                 article_html=article_html,
                 homepage_html=homepage_html,
                 article_url=url,
@@ -274,7 +275,78 @@ class SourceConfigService:
             response.raise_for_status()
             return response.text
 
-    async def _suggest_selectors_with_llm(
+    async def _verify_content_quality(self, text: str, type: str) -> bool:
+        """
+        Verify extracted text using AI (Judge).
+        
+        Args:
+            text: The extracted text content
+            type: 'title_selector' or 'content_selector'
+        """
+        if not text:
+            return False
+
+        # --- 1. Basic Heuristics (Fail Fast) ---
+        clean_text = text.strip()
+        
+        if type == 'title_selector':
+            if len(clean_text) < 10: # Titles are rarely super short
+                print(f"      ⚠️ Rejected: Title too short (<10 chars)")
+                return False
+                
+        elif type == 'content_selector':
+            if len(clean_text) < 50: # Content must be substantial
+                print(f"      ⚠️ Rejected: Content too short (<50 chars)")
+                return False
+        
+        # --- 2. AI Verification ---
+        try:
+            client = AsyncOpenAI(
+                api_key=settings.deepseek_api_key,
+                base_url="https://api.deepseek.com"
+            )
+            
+            if type == 'title_selector':
+                system_prompt = """You are a Quality Assurance bot for a News Scraper.
+Is this text a valid NEWS ARTICLE HEADLINE?
+YES: "Global markets rally as inflation drops", "Regeringen varsler nye reformer"
+NO: "Menu", "Seneste nyt", "Mest læste", "Forside", "Log ind", "Abonnement"
+Return ONLY JSON: {"is_valid": true/false}"""
+            
+            else: # content_selector
+                system_prompt = """You are a Quality Assurance bot for a News Scraper.
+Is this text valid ARTICLE CONTENT (body text, lead paragraph, or paywall teaser)?
+YES: Narrative text, sentences, paragraphs. "Statsministeren udtalte i går..."
+YES (Paywall): "Det var en mørk aften... [Log ind for at læse mere]"
+NO: Lists of links ("Læs også: ..."), Navigation menus, Cookie banners, Footer text, Metadata only.
+Return ONLY JSON: {"is_valid": true/false}"""
+
+            user_prompt = f"Analyze:\n{clean_text[:500]}"
+
+            response = await client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1,
+                max_tokens=50
+            )
+            
+            content = response.choices[0].message.content.strip().replace('```json', '').replace('```', '')
+            result = json.loads(content)
+            
+            if not result.get('is_valid'):
+                print(f"      ⚠️ AI Rejected: Looks like noise/list")
+                return False
+                
+            return True
+
+        except Exception as e:
+            print(f"      ⚠️ Verification failed (failing open): {e}")
+            return True
+
+    async def _analyze_source_structure(
         self,
         article_html: str,
         homepage_html: str,
@@ -282,202 +354,114 @@ class SourceConfigService:
         root_url: str
     ) -> Dict[str, Optional[str]]:
         """
-        Analyze article and homepage HTML using DeepSeek AI.
-
-        This method uses DeepSeek's LLM to:
-        1. Suggest CSS selectors for article content (from article HTML)
-        2. Detect search URL pattern (from homepage HTML)
-
-        Args:
-            article_html: Raw HTML from the article page
-            homepage_html: Raw HTML from the homepage
-            article_url: The article URL (for context)
-            root_url: The root domain URL (for context)
-
-        Returns:
-            Dictionary with suggested selectors, search pattern, and confidence level
+        Analyze source structure using Standard Selectors + AI Verification.
         """
+        validated_selectors = {}
+        soup = BeautifulSoup(article_html, 'lxml')
+        validation_count = 0
+
+        # === Step 1: Detect Search Pattern (Homepage Analysis via AI) ===
         try:
-            # Initialize DeepSeek client (OpenAI-compatible API)
-            client = AsyncOpenAI(
-                api_key=settings.deepseek_api_key,
-                base_url="https://api.deepseek.com"
-            )
-
-            # Truncate HTMLs to avoid token limits
-            # Article HTML: Keep beginning and middle (~10k chars)
-            article_length = len(article_html)
-            if article_length > 10000:
-                article_snippet = article_html[:5000] + "\n\n... [article truncated] ...\n\n" + article_html[article_length//2:article_length//2 + 5000]
-            else:
-                article_snippet = article_html
-
-            # Homepage HTML: Keep beginning only (~5k chars) - we mainly need the header/nav
-            homepage_snippet = homepage_html[:5000]
-
-            # Prepare the prompt
-            system_prompt = """You are an expert web scraper and HTML analyst. Your task is to:
-1. Identify CSS selectors for extracting content from news articles
-2. Detect the search URL pattern from the homepage
-
-Return ONLY a valid JSON object with these keys:
-- title_selector: CSS selector for the article title
-- content_selector: CSS selector for the article body/content
-- date_selector: CSS selector for the publication date
-- search_url_pattern: The search URL with {keyword} as placeholder
-
-Guidelines for CSS Selectors:
-1. Prefer specific selectors (e.g., "article h1.title") over generic ones
-2. Use semantic HTML tags when available (article, time, etc.)
-3. Look for Schema.org attributes (itemprop="headline", etc.)
-4. Avoid overly specific selectors that might break easily
-5. Return null if you cannot find a reliable selector
-
-Guidelines for Search Pattern:
-1. Look for <form> tags with action attributes containing "search", "søg", "find"
-2. Look for <input> tags with type="search" or name="q", "query", "søg"
-3. Construct a URL pattern like: https://domain.com/search?q={keyword}
-4. If no search form is found, look for RSS feed links and return those
-5. Return null if no search mechanism is found
-
-Do NOT include markdown formatting or explanations. Return ONLY the JSON object."""
-
-            user_prompt = f"""Analyze these HTMLs and suggest configuration:
-
-ARTICLE PAGE ({article_url}):
-{article_snippet}
-
-HOMEPAGE ({root_url}):
-{homepage_snippet}
-
-Extract:
-1. CSS selectors from the ARTICLE PAGE
-2. Search URL pattern from the HOMEPAGE"""
-
-            print(f"🤖 Calling DeepSeek AI to analyze {article_url}...")
-
-            # Call DeepSeek API
+            print(f"   🤖 Detecting search pattern on homepage via AI...")
+            client = AsyncOpenAI(api_key=settings.deepseek_api_key, base_url="https://api.deepseek.com")
+            
+            search_prompt = """Analyze this Homepage HTML and find the SEARCH URL pattern.
+Look for <form action="..."> or <input name="q">.
+Return ONLY JSON: {"search_url_pattern": "https://domain.com/search?q={keyword}"} OR null."""
+            
             response = await client.chat.completions.create(
-                model="deepseek-chat",  # DeepSeek's main model
+                model="deepseek-chat",
                 messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "system", "content": search_prompt},
+                    {"role": "user", "content": homepage_html[:8000]}
                 ],
-                temperature=0.3,  # Lower temperature for more consistent output
-                max_tokens=500
+                temperature=0.1, max_tokens=100
             )
-
-            # Extract and parse response
-            ai_response = response.choices[0].message.content.strip()
-            print(f"📝 DeepSeek response: {ai_response[:200]}...")
-
-            # Remove markdown code blocks if present
-            if ai_response.startswith("```"):
-                ai_response = ai_response.strip("`").strip()
-                if ai_response.startswith("json"):
-                    ai_response = ai_response[4:].strip()
-
-            # Parse JSON
-            selectors = json.loads(ai_response)
-
-            # Validate selectors by testing them against the article HTML
-            soup = BeautifulSoup(article_html, 'lxml')
-            validated_selectors = {}
-            validation_count = 0
-
-            for key in ['title_selector', 'content_selector', 'date_selector']:
-                selector = selectors.get(key)
-                validated_selectors[key] = None # Default to None
-
-                # 1. Try AI suggestion first
-                if selector:
-                    try:
-                        element = soup.select_one(selector)
-                        if element:
-                            validated_selectors[key] = selector
-                            validation_count += 1
-                            print(f"   ✅ {key}: {selector}")
-                            
-                            # Log preview
-                            if element.name == 'meta':
-                                text = element.get('content', '')
-                            elif key == 'date_selector' and element.has_attr('datetime'):
-                                text = element.get('datetime')
-                            else:
-                                text = element.get_text(strip=True)
-                                
-                            preview = text[:1000].replace('\n', ' ') if text else "EMPTY"
-                            print(f"      👀 Preview: \"{preview}...\"")
-                            
-                            continue # Success, move to next key
-                        else:
-                            print(f"   ❌ {key}: {selector} (not found in HTML)")
-                    except Exception as e:
-                        print(f"   ❌ {key}: {selector} (invalid selector: {e})")
-                
-                # 2. Try generic fallbacks if AI failed
-                print(f"   🔄 Trying fallbacks for {key}...")
-                for fallback in GENERIC_SELECTORS_MAP.get(key, []):
-                    try:
-                        element = soup.select_one(fallback)
-                        if element:
-                            validated_selectors[key] = fallback
-                            validation_count += 1
-                            print(f"   ✅ {key}: {fallback} (fallback used)")
-                            
-                            # Log preview
-                            if element.name == 'meta':
-                                text = element.get('content', '')
-                            elif key == 'date_selector' and element.has_attr('datetime'):
-                                text = element.get('datetime')
-                            else:
-                                text = element.get_text(strip=True)
-                                
-                            preview = text[:1000].replace('\n', ' ') if text else "EMPTY"
-                            print(f"      👀 Preview: \"{preview}...\"")
-                            
-                            break
-                    except:
-                        continue
-
-            # Validate search URL pattern
-            search_pattern = selectors.get('search_url_pattern')
-            if search_pattern:
-                # Basic validation: should contain {keyword} placeholder
-                if '{keyword}' in search_pattern:
-                    validated_selectors['search_url_pattern'] = search_pattern
-                    print(f"   ✅ search_url_pattern: {search_pattern}")
-                else:
-                    validated_selectors['search_url_pattern'] = None
-                    print(f"   ❌ search_url_pattern: {search_pattern} (missing {{keyword}} placeholder)")
+            
+            content = response.choices[0].message.content.strip().replace('```json', '').replace('```', '')
+            search_res = json.loads(content)
+            pattern = search_res.get('search_url_pattern')
+            
+            if pattern and '{keyword}' in pattern:
+                validated_selectors['search_url_pattern'] = pattern
+                print(f"   ✅ search_url_pattern: {pattern}")
+                validation_count += 1
             else:
                 validated_selectors['search_url_pattern'] = None
                 print(f"   ⚠️ search_url_pattern: Not detected")
-
-            # Determine confidence based on validation
-            if validation_count == 3:
-                confidence = "high"
-            elif validation_count >= 2:
-                confidence = "medium"
-            elif validation_count >= 1:
-                confidence = "low"
-            else:
-                confidence = "low"
-
-            validated_selectors['confidence'] = confidence
-
-            print(f"🎯 Analysis complete. Confidence: {confidence}")
-            return validated_selectors
-
-        except json.JSONDecodeError as e:
-            print(f"❌ Failed to parse DeepSeek response as JSON: {e}")
-            # Fallback to heuristic analysis
-            return await self._fallback_heuristic_analysis(article_html, article_url)
-
+                
         except Exception as e:
-            print(f"❌ DeepSeek API error: {e}")
-            # Fallback to heuristic analysis
-            return await self._fallback_heuristic_analysis(article_html, article_url)
+            print(f"   ❌ Search pattern detection failed: {e}")
+            validated_selectors['search_url_pattern'] = None
+
+
+        # === Step 2: Detect Selectors (Iterate Generics + AI Verification) ===
+        
+        for key in ['title_selector', 'content_selector', 'date_selector']:
+            validated_selectors[key] = None
+            print(f"   🔍 Testing candidates for {key}...")
+            
+            candidates = GENERIC_SELECTORS_MAP.get(key, [])
+            
+            for selector in candidates:
+                try:
+                    element = soup.select_one(selector)
+                    if not element:
+                        continue
+                        
+                    # Extract Text
+                    if element.name == 'meta':
+                        text = element.get('content', '')
+                    elif key == 'date_selector' and element.has_attr('datetime'):
+                        text = element.get('datetime')
+                    else:
+                        text = element.get_text(strip=True)
+                    
+                    if not text:
+                        continue
+
+                    # === VERIFICATION ===
+                    is_valid = False
+                    
+                    # DATE: Use Heuristic
+                    if key == 'date_selector':
+                        if re.search(r'202[0-9]', text):
+                            is_valid = True
+                        else:
+                            print(f"      ⚠️ Rejected Date: '{text}' (no year found)")
+                    
+                    # TITLE & CONTENT: Use AI Judge
+                    else:
+                        is_valid = await self._verify_content_quality(text, key)
+
+                    if is_valid:
+                        validated_selectors[key] = selector
+                        validation_count += 1
+                        print(f"   ✅ Verified: {selector}")
+                        preview = text[:1000].replace('\n', ' ')
+                        print(f"      👀 Preview: \"{preview}...\"")
+                        break # Stop at first valid selector
+                
+                except Exception as e:
+                    continue
+            
+            if not validated_selectors[key]:
+                print(f"   ❌ No valid {key} found in generic list.")
+
+
+        # Determine confidence
+        if validation_count >= 3:
+            confidence = "high"
+        elif validation_count >= 2:
+            confidence = "medium"
+        else:
+            confidence = "low"
+
+        validated_selectors['confidence'] = confidence
+        print(f"🎯 Analysis complete. Confidence: {confidence}")
+        
+        return validated_selectors
+
 
     async def _fallback_heuristic_analysis(self, article_html: str, article_url: str) -> Dict[str, Optional[str]]:
         """

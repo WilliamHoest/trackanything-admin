@@ -8,9 +8,9 @@ These lists are used as a "best guess" fallback when:
 """
 
 GENERIC_TITLE_SELECTORS = [
-    'article h1',
     'h1[itemprop="headline"]',
     'h1.article-title',
+    'article h1',
     'h1.entry-title',  # Wordpress standard
     'h1.post-title',
     'h1.headline',
@@ -21,11 +21,13 @@ GENERIC_TITLE_SELECTORS = [
 ]
 
 GENERIC_CONTENT_SELECTORS = [
+    'div[itemprop="articleBody"]',
+    'div.article-body',
+    'div.post-content',
+    'div.entry-content',
     '[itemprop="articleBody"]',
     'article .article-content',
     '.article-body',
-    '.entry-content',  # Wordpress standard
-    '.post-content',
     'div[class*="article-body"]', # Catch variations like js-article-body
     'div[class*="rich-text"]',    # Common in CMSs
     'main article',
@@ -34,15 +36,16 @@ GENERIC_CONTENT_SELECTORS = [
 ]
 
 GENERIC_DATE_SELECTORS = [
+    'meta[property="article:published_time"]', # Meta tag priority
     'time[datetime]',
     '[itemprop="datePublished"]',
-    'meta[property="article:published_time"]', # Meta tag fallback
     'time.published',
     '.publish-date',
     '.article-date',
     '.date',
     '.timestamp',
-    'article time'
+    'article time',
+    '.published-date'
 ]
 
 GENERIC_SELECTORS_MAP = {
