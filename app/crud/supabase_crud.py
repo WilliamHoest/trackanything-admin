@@ -219,9 +219,20 @@ class SupabaseCRUD:
             
             # Order by created_at descending and apply pagination
             query = query.order("created_at", desc=True).range(skip, skip + limit - 1)
-            
+
             result = query.execute()
-            return result.data or []
+            mentions = result.data or []
+
+            # Transform Supabase plural join names to singular for Pydantic schema
+            for mention in mentions:
+                if "brands" in mention:
+                    mention["brand"] = mention.pop("brands")
+                if "topics" in mention:
+                    mention["topic"] = mention.pop("topics")
+                if "platforms" in mention:
+                    mention["platform"] = mention.pop("platforms")
+
+            return mentions
         except Exception as e:
             print(f"Error getting mentions: {e}")
             return []
@@ -332,12 +343,11 @@ class SupabaseCRUD:
             print(f"Error getting platform by name: {e}")
             return None
 
-    async def create_platform(self, name: str, logo_url: str = None) -> Optional[Dict[str, Any]]:
+    async def create_platform(self, name: str) -> Optional[Dict[str, Any]]:
         """Create new platform"""
         try:
             data = {
                 "name": name,
-                "logo_url": logo_url,
                 "created_at": datetime.utcnow().isoformat()
             }
             result = self.supabase.table("platforms").insert(data).execute()
@@ -427,6 +437,55 @@ class SupabaseCRUD:
         except Exception as e:
             print(f"Error creating mention: {e}")
             return None
+
+    async def batch_create_mentions(self, mentions_data: List[Dict[str, Any]]) -> tuple[int, List[str]]:
+        """
+        Create multiple mentions in a single batch operation.
+
+        PERFORMANCE: Batch insertion is 10-50x faster than individual inserts
+        when dealing with 10+ mentions.
+
+        Args:
+            mentions_data: List of mention dictionaries
+
+        Returns:
+            Tuple of (successful_count, list_of_errors)
+        """
+        if not mentions_data:
+            return 0, []
+
+        try:
+            # Prepare all data for batch insert
+            batch_data = []
+            now = datetime.utcnow().isoformat()
+
+            for mention_data in mentions_data:
+                data = {
+                    "caption": mention_data.get("caption", ""),
+                    "post_link": mention_data.get("post_link", ""),
+                    "published_at": mention_data.get("published_at", now),
+                    "content_teaser": mention_data.get("content_teaser"),
+                    "platform_id": mention_data.get("platform_id"),
+                    "brand_id": mention_data.get("brand_id"),
+                    "topic_id": mention_data.get("topic_id"),
+                    "read_status": mention_data.get("read_status", False),
+                    "notified_status": mention_data.get("notified_status", False),
+                    "created_at": now
+                }
+                batch_data.append(data)
+
+            # Single batch insert
+            result = self.supabase.table("mentions").insert(batch_data).execute()
+
+            successful_count = len(result.data) if result.data else 0
+            print(f"✅ Batch inserted {successful_count}/{len(mentions_data)} mentions")
+
+            return successful_count, []
+
+        except Exception as e:
+            error_msg = f"Batch insert failed: {e}"
+            print(f"❌ {error_msg}")
+            return 0, [error_msg]
 
     # Utility functions for scraping
     async def get_all_user_keywords(self, profile_id: uuid.UUID) -> List[str]:

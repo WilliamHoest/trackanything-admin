@@ -1,5 +1,6 @@
 import json
 import re
+import httpx
 from typing import Dict, Optional
 from bs4 import BeautifulSoup
 from openai import AsyncOpenAI
@@ -82,6 +83,68 @@ Return ONLY JSON: {"is_valid": true/false}"""
             print(f"      ⚠️ Verification failed (failing open): {e}")
             return True
 
+    async def verify_search_pattern(self, pattern: str, domain: str) -> Optional[str]:
+        """
+        Verify that a search pattern actually works by testing it.
+
+        Args:
+            pattern: The search URL pattern (e.g., "https://domain.com/search?q={keyword}")
+            domain: The domain name
+
+        Returns:
+            Verified pattern if it works, None if it fails
+        """
+        if not pattern or '{keyword}' not in pattern:
+            return None
+
+        # Test with a simple keyword
+        test_url = pattern.replace('{keyword}', 'test')
+
+        try:
+            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+                headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
+                response = await client.get(test_url, headers=headers)
+
+                if response.status_code == 200:
+                    print(f"      ✅ Search pattern verified: {pattern}")
+                    return pattern
+                else:
+                    print(f"      ⚠️ Search pattern returned {response.status_code}: {pattern}")
+                    return None
+
+        except Exception as e:
+            print(f"      ⚠️ Search pattern test failed: {e}")
+            return None
+
+    async def try_common_search_patterns(self, domain: str, root_url: str) -> Optional[str]:
+        """
+        Try common search URL patterns as fallback.
+
+        Args:
+            domain: The domain name
+            root_url: The root URL (e.g., "https://example.com")
+
+        Returns:
+            First working pattern or None
+        """
+        # Common patterns (Danish and English variants)
+        patterns = [
+            f"{root_url}/soeg?q={{keyword}}",      # Danish URL-safe
+            f"{root_url}/søg?q={{keyword}}",       # Danish with ø
+            f"{root_url}/search?q={{keyword}}",    # English
+            f"{root_url}/sog?query={{keyword}}",   # Version2 style
+            f"{root_url}/?s={{keyword}}",          # WordPress style
+        ]
+
+        print(f"   🔍 Trying common search patterns for {domain}...")
+
+        for pattern in patterns:
+            verified = await self.verify_search_pattern(pattern, domain)
+            if verified:
+                return verified
+
+        return None
+
     async def analyze_source_structure(
         self,
         article_html: str,
@@ -97,38 +160,62 @@ Return ONLY JSON: {"is_valid": true/false}"""
         validation_count = 0
 
         # === Step 1: Detect Search Pattern (Homepage Analysis via AI) ===
+        verified_pattern = None
+
         try:
             print(f"   🤖 Detecting search pattern on homepage via AI...")
             client = AsyncOpenAI(api_key=settings.deepseek_api_key, base_url="https://api.deepseek.com")
-            
+
             search_prompt = """Analyze this Homepage HTML and find the SEARCH URL pattern.
 Look for <form action=\"...\"> or <input name=\"q\">
 Return ONLY JSON: {"search_url_pattern": "https://domain.com/search?q={keyword}"} OR null."""
-            
+
             response = await client.chat.completions.create(
                 model="deepseek-chat",
                 messages=[
                     {"role": "system", "content": search_prompt},
-                    {"role": "user", "content": homepage_html[:8000]}
+                    {"role": "user", "content": homepage_html[:20000]}  # Increased from 8000 to 20000
                 ],
                 temperature=0.1, max_tokens=100
             )
-            
+
             content = response.choices[0].message.content.strip().replace('```json', '').replace('```', '')
             search_res = json.loads(content)
             pattern = search_res.get('search_url_pattern')
-            
+
             if pattern and '{keyword}' in pattern:
-                validated_selectors['search_url_pattern'] = pattern
-                print(f"   ✅ search_url_pattern: {pattern}")
-                validation_count += 1
-            else:
-                validated_selectors['search_url_pattern'] = None
-                print(f"   ⚠️ search_url_pattern: Not detected")
-                
+                print(f"   🔍 AI suggested: {pattern}")
+                # Verify the pattern actually works
+                from urllib.parse import urlparse
+                parsed = urlparse(root_url)
+                domain = parsed.netloc.lower()
+                if domain.startswith('www.'):
+                    domain = domain[4:]
+
+                verified_pattern = await self.verify_search_pattern(pattern, domain)
+
         except Exception as e:
-            print(f"   ❌ Search pattern detection failed: {e}")
+            print(f"   ❌ AI search pattern detection failed: {e}")
+
+        # If AI pattern didn't work, try common patterns
+        if not verified_pattern:
+            print(f"   🔄 AI pattern failed/missing, trying common patterns...")
+            from urllib.parse import urlparse
+            parsed = urlparse(root_url)
+            domain = parsed.netloc.lower()
+            if domain.startswith('www.'):
+                domain = domain[4:]
+
+            verified_pattern = await self.try_common_search_patterns(domain, root_url)
+
+        # Store result
+        if verified_pattern:
+            validated_selectors['search_url_pattern'] = verified_pattern
+            print(f"   ✅ search_url_pattern: {verified_pattern}")
+            validation_count += 1
+        else:
             validated_selectors['search_url_pattern'] = None
+            print(f"   ⚠️ search_url_pattern: Not found")
 
 
         # === Step 2: Detect Selectors (Iterate Generics + AI Verification) ===

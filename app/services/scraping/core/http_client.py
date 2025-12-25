@@ -38,7 +38,12 @@ async def fetch_with_retry(
     """
     Fetch URL with automatic retry on network errors or 5xx status codes.
     Uses exponential backoff: 2s, 4s, 8s.
+    Automatically follows redirects (up to 20 by default).
     """
+    # Ensure follow_redirects is enabled (default in httpx, but explicit for clarity)
+    if 'follow_redirects' not in kwargs:
+        kwargs['follow_redirects'] = True
+
     response = await client.get(url, **kwargs)
     response.raise_for_status()  # Raises HTTPStatusError for 4xx/5xx
     return response

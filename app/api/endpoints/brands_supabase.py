@@ -13,8 +13,14 @@ async def get_brands(
     crud: SupabaseCRUD = Depends(get_supabase_crud),
     current_user = Depends(get_current_user)
 ):
-    """Get all brands for the current user"""
+    """Get all brands for the current user with topics"""
     brands = await crud.get_brands_by_profile(current_user.id)
+
+    # Add topics to each brand
+    for brand in brands:
+        topics = await crud.get_topics_by_brand(brand["id"])
+        brand["topics"] = topics
+
     return brands
 
 @router.get("/{brand_id}", response_model=dict)

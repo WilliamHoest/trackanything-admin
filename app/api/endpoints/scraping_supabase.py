@@ -82,11 +82,43 @@ async def scrape_brand(
         
         # Fetch mentions from all sources (async with parallel execution)
         mentions = await fetch_all_mentions(keyword_list)
-        
+
+        if not mentions:
+            return BrandScrapeResponse(
+                message=f"No mentions found for brand '{brand['name']}'",
+                brand_id=brand_id,
+                brand_name=brand["name"],
+                keywords_used=keyword_list,
+                mentions_found=0,
+                mentions_saved=0,
+                errors=[]
+            )
+
         errors = []
-        mentions_saved = 0
-        
-        # Save mentions to database
+
+        # OPTIMIZATION: Pre-fetch all platforms and topic keywords BEFORE the loop
+        # This avoids N database queries and reduces latency significantly
+
+        # 1. Get or create all unique platforms
+        unique_platforms = set(m.get("platform", "Unknown") for m in mentions)
+        platform_cache = {}
+
+        for platform_name in unique_platforms:
+            platform = await crud.get_platform_by_name(platform_name)
+            if not platform:
+                platform = await crud.create_platform(platform_name)
+            if platform:
+                platform_cache[platform_name] = platform
+
+        # 2. Pre-fetch all topic keywords
+        topic_keywords_cache = {}
+        for topic in active_topics:
+            keywords = await crud.get_keywords_by_topic(topic["id"])
+            topic_keywords_cache[topic["id"]] = keywords
+
+        # 3. Build all mention objects (no database writes yet)
+        mentions_to_insert = []
+
         for mention in mentions:
             try:
                 # Convert published_parsed tuple to datetime
@@ -94,27 +126,29 @@ async def scrape_brand(
                     published_date = datetime(*mention["published_parsed"][:6], tzinfo=timezone.utc)
                 else:
                     published_date = datetime.now(timezone.utc)
-                
-                # Get or create platform
-                platform = await crud.get_platform_by_name(mention.get("platform", "Unknown"))
+
+                # Get platform from cache
+                platform = platform_cache.get(mention.get("platform", "Unknown"))
                 if not platform:
-                    platform = await crud.create_platform(mention.get("platform", "Unknown"))
-                
-                # Find best matching topic based on keywords in mention
+                    error_msg = f"Platform not found for mention: {mention.get('title', 'Unknown')}"
+                    errors.append(error_msg)
+                    continue
+
+                # Find best matching topic based on keywords in mention (using cache)
                 best_topic = None
                 for topic in active_topics:
-                    topic_keywords = await crud.get_keywords_by_topic(topic["id"])
+                    topic_keywords = topic_keywords_cache.get(topic["id"], [])
                     for keyword in topic_keywords:
                         if keyword["text"].lower() in mention.get("title", "").lower():
                             best_topic = topic
                             break
                     if best_topic:
                         break
-                
+
                 # If no keyword match found, use first active topic
                 if not best_topic:
                     best_topic = active_topics[0]
-                
+
                 # Create mention object
                 mention_data = {
                     "caption": mention.get("title", ""),
@@ -127,17 +161,20 @@ async def scrape_brand(
                     "read_status": False,
                     "notified_status": False
                 }
-                
-                # Save to database
-                saved_mention = await crud.create_mention(mention_data)
-                if saved_mention:
-                    mentions_saved += 1
-                    print(f"✅ Saved mention for {brand['name']}: {mention.get('title', '')}")
-                    
+
+                mentions_to_insert.append(mention_data)
+
             except Exception as e:
-                error_msg = f"Error saving mention '{mention.get('title', 'Unknown')}': {str(e)}"
+                error_msg = f"Error preparing mention '{mention.get('title', 'Unknown')}': {str(e)}"
                 errors.append(error_msg)
                 print(f"❌ {error_msg}")
+
+        # 4. BATCH INSERT all mentions at once (10-50x faster than individual inserts)
+        mentions_saved = 0
+        if mentions_to_insert:
+            mentions_saved, batch_errors = await crud.batch_create_mentions(mentions_to_insert)
+            errors.extend(batch_errors)
+            print(f"✅ Batch saved {mentions_saved} mentions for {brand['name']}")
         
         return BrandScrapeResponse(
             message=f"Scraping completed for brand '{brand['name']}'",
