@@ -24,7 +24,7 @@ from app.schemas.source_config import (
 from app.security.auth import get_current_user
 from app.core.supabase_db import get_supabase_crud
 from app.crud.supabase_crud import SupabaseCRUD
-from app.services.source_config_service import SourceConfigService
+from app.services.source_configuration.service import SourceConfigService
 
 router = APIRouter()
 

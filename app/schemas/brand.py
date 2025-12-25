@@ -7,14 +7,16 @@ class BrandBase(BaseModel):
     name: str
 
 class BrandCreate(BrandBase):
-    pass
+    scrape_frequency_hours: Optional[int] = 24
 
 class BrandUpdate(BaseModel):
     name: Optional[str] = None
+    scrape_frequency_hours: Optional[int] = None
 
 class BrandResponse(BrandBase):
     id: int
     profile_id: uuid.UUID
+    scrape_frequency_hours: int
     created_at: datetime
     
     class Config:

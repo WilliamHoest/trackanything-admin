@@ -6,7 +6,7 @@ from app.security.auth import get_current_user
 from app.core.config import settings
 from app.core.supabase_db import get_supabase_crud
 from app.crud.supabase_crud import SupabaseCRUD
-from app.services.scraping_service import fetch_all_mentions
+from app.services.scraping.orchestrator import fetch_all_mentions
 
 router = APIRouter()
 

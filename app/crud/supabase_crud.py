@@ -77,6 +77,7 @@ class SupabaseCRUD:
         try:
             data = {
                 "name": brand.name,
+                "scrape_frequency_hours": brand.scrape_frequency_hours,
                 "profile_id": str(profile_id),
                 "created_at": datetime.utcnow().isoformat()
             }
@@ -119,8 +120,15 @@ class SupabaseCRUD:
     async def get_topic(self, topic_id: int) -> Optional[Dict[str, Any]]:
         """Get topic by ID with keywords"""
         try:
-            result = self.supabase.table("topics").select("*, keywords(*)").eq("id", topic_id).execute()
-            return result.data[0] if result.data else None
+            result = self.supabase.table("topics").select("*").eq("id", topic_id).execute()
+            if not result.data:
+                return None
+
+            topic = result.data[0]
+            # Fetch keywords via junction table
+            keywords = await self.get_keywords_by_topic(topic_id)
+            topic["keywords"] = keywords
+            return topic
         except Exception as e:
             print(f"Error getting topic: {e}")
             return None
@@ -128,8 +136,15 @@ class SupabaseCRUD:
     async def get_topics_by_brand(self, brand_id: int) -> List[Dict[str, Any]]:
         """Get all topics for a brand with keywords"""
         try:
-            result = self.supabase.table("topics").select("*, keywords(*)").eq("brand_id", brand_id).execute()
-            return result.data or []
+            result = self.supabase.table("topics").select("*").eq("brand_id", brand_id).execute()
+            topics = result.data or []
+
+            # Fetch keywords for each topic
+            for topic in topics:
+                keywords = await self.get_keywords_by_topic(topic["id"])
+                topic["keywords"] = keywords
+
+            return topics
         except Exception as e:
             print(f"Error getting topics by brand: {e}")
             return []
@@ -222,26 +237,59 @@ class SupabaseCRUD:
             print(f"Error updating mention read status: {e}")
             return None
 
-    # Keyword CRUD  
+    # Keyword CRUD
     async def get_keywords_by_topic(self, topic_id: int) -> List[Dict[str, Any]]:
-        """Get keywords for a topic"""
+        """Get keywords for a topic via junction table"""
         try:
-            result = self.supabase.table("keywords").select("*").eq("topic_id", topic_id).execute()
-            return result.data or []
+            # Query topic_keywords junction table and join with keywords
+            result = self.supabase.table("topic_keywords").select("""
+                keyword_id,
+                keywords(*)
+            """).eq("topic_id", topic_id).execute()
+
+            # Extract keywords from nested structure
+            keywords = []
+            for item in result.data or []:
+                if item.get("keywords"):
+                    keywords.append(item["keywords"])
+
+            return keywords
         except Exception as e:
             print(f"Error getting keywords by topic: {e}")
             return []
 
     async def create_keyword(self, keyword: keyword_schemas.KeywordCreate, topic_id: int) -> Optional[Dict[str, Any]]:
-        """Create new keyword"""
+        """Create new keyword and link it to topic via junction table"""
         try:
-            data = {
-                "word": keyword.word,
+            # Step 1: Check if keyword already exists (text is UNIQUE)
+            existing = self.supabase.table("keywords").select("*").eq("text", keyword.text).execute()
+
+            if existing.data:
+                # Keyword exists, use it
+                keyword_record = existing.data[0]
+            else:
+                # Create new keyword
+                keyword_data = {
+                    "text": keyword.text,
+                    "created_at": datetime.utcnow().isoformat()
+                }
+                keyword_result = self.supabase.table("keywords").insert(keyword_data).execute()
+                if not keyword_result.data:
+                    return None
+                keyword_record = keyword_result.data[0]
+
+            # Step 2: Create relationship in topic_keywords junction table
+            junction_data = {
                 "topic_id": topic_id,
-                "created_at": datetime.utcnow().isoformat()
+                "keyword_id": keyword_record["id"]
             }
-            result = self.supabase.table("keywords").insert(data).execute()
-            return result.data[0] if result.data else None
+            junction_result = self.supabase.table("topic_keywords").insert(junction_data).execute()
+
+            if not junction_result.data:
+                return None
+
+            # Return the keyword record
+            return keyword_record
         except Exception as e:
             print(f"Error creating keyword: {e}")
             return None
@@ -255,10 +303,11 @@ class SupabaseCRUD:
             print(f"Error getting keyword: {e}")
             return None
 
-    async def delete_keyword(self, keyword_id: int) -> bool:
-        """Delete keyword"""
+    async def delete_keyword(self, topic_id: int, keyword_id: int) -> bool:
+        """Delete keyword relationship from topic (via junction table)"""
         try:
-            result = self.supabase.table("keywords").delete().eq("id", keyword_id).execute()
+            # Delete from topic_keywords junction table
+            result = self.supabase.table("topic_keywords").delete().eq("topic_id", topic_id).eq("keyword_id", keyword_id).execute()
             return len(result.data) > 0
         except Exception as e:
             print(f"Error deleting keyword: {e}")

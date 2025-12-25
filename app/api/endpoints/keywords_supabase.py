@@ -66,40 +66,41 @@ async def create_keyword(
         )
     return new_keyword
 
-@router.delete("/{keyword_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/topics/{topic_id}/keywords/{keyword_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_keyword(
+    topic_id: int,
     keyword_id: int,
     crud: SupabaseCRUD = Depends(get_supabase_crud),
     current_user = Depends(get_current_user)
 ):
-    """Delete a keyword"""
-    # Get keyword and check ownership through topic->brand chain
+    """Delete a keyword from a topic"""
+    # Check topic ownership
+    topic = await crud.get_topic(topic_id)
+    if not topic:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Topic not found"
+        )
+
+    # Check brand ownership
+    brand = await crud.get_brand(topic["brand_id"])
+    if not brand or brand.get("profile_id") != str(current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Topic not found"
+        )
+
+    # Verify keyword exists
     keyword = await crud.get_keyword(keyword_id)
     if not keyword:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Keyword not found"
         )
-    
-    # Check topic ownership
-    topic = await crud.get_topic(keyword["topic_id"])
-    if not topic:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Keyword not found"
-        )
-    
-    # Check brand ownership
-    brand = await crud.get_brand(topic["brand_id"])
-    if not brand or brand.get("profile_id") != str(current_user.id):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Keyword not found"
-        )
-    
-    success = await crud.delete_keyword(keyword_id)
+
+    success = await crud.delete_keyword(topic_id, keyword_id)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to delete keyword"
+            detail="Failed to delete keyword from topic"
         )
