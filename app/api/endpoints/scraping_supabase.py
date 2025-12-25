@@ -65,7 +65,7 @@ async def scrape_brand(
         for topic in active_topics:
             keywords = await crud.get_keywords_by_topic(topic["id"])
             for keyword in keywords:
-                all_keywords.add(keyword["word"])
+                all_keywords.add(keyword["text"])
         
         keyword_list = list(all_keywords)
         
@@ -105,7 +105,7 @@ async def scrape_brand(
                 for topic in active_topics:
                     topic_keywords = await crud.get_keywords_by_topic(topic["id"])
                     for keyword in topic_keywords:
-                        if keyword["word"].lower() in mention.get("title", "").lower():
+                        if keyword["text"].lower() in mention.get("title", "").lower():
                             best_topic = topic
                             break
                     if best_topic:
