@@ -2,6 +2,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.api_v1 import api_router
 from app.core.config import settings
+from app.core.logging_config import setup_logging
+import logging
+
+# Setup logging
+setup_logging()
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="TrackAnything Admin API",
@@ -10,6 +16,8 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc"
 )
+
+logger.info("TrackAnything Admin API starting...")
 
 # Configure CORS
 app.add_middleware(

@@ -7,8 +7,10 @@ from app.core.config import settings
 from app.core.supabase_db import get_supabase_crud
 from app.crud.supabase_crud import SupabaseCRUD
 from app.services.scraping.orchestrator import fetch_all_mentions
+import logging
 
 router = APIRouter()
+scraping_logger = logging.getLogger("scraping")
 
 class BrandScrapeResponse(BaseModel):
     message: str
@@ -101,14 +103,28 @@ async def scrape_brand(
 
         # 1. Get or create all unique platforms
         unique_platforms = set(m.get("platform", "Unknown") for m in mentions)
+        scraping_logger.info(f"Unique platforms found in mentions: {unique_platforms}")
         platform_cache = {}
 
         for platform_name in unique_platforms:
+            scraping_logger.debug(f"Looking up platform: {platform_name}")
             platform = await crud.get_platform_by_name(platform_name)
             if not platform:
+                scraping_logger.info(f"Platform '{platform_name}' not found, creating...")
                 platform = await crud.create_platform(platform_name)
+                if platform:
+                    scraping_logger.info(f"✅ Created platform '{platform_name}' with ID {platform['id']}")
+                else:
+                    scraping_logger.error(f"❌ Failed to create platform '{platform_name}'")
+            else:
+                scraping_logger.debug(f"Found existing platform '{platform_name}' with ID {platform['id']}")
+
             if platform:
                 platform_cache[platform_name] = platform
+            else:
+                scraping_logger.error(f"❌ Platform '{platform_name}' is None after lookup/creation")
+
+        scraping_logger.info(f"Platform cache has {len(platform_cache)} entries: {list(platform_cache.keys())}")
 
         # 2. Pre-fetch all topic keywords
         topic_keywords_cache = {}

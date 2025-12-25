@@ -35,14 +35,11 @@ def normalize_url(url: str) -> str:
         return url
 
 def get_platform_from_url(url: str) -> str:
-    """Determine platform from URL domain"""
+    """Extract platform name from URL domain"""
     try:
         domain = urlparse(url).netloc.lower()
-        if "politiken" in domain:
-            return "Politiken"
-        elif "dr.dk" in domain:
-            return "DR"
-        else:
-            return "Unknown"
+        # Remove www. prefix for cleaner domain names
+        domain = domain.replace('www.', '')
+        return domain if domain else "Unknown"
     except Exception:
         return "Unknown"
