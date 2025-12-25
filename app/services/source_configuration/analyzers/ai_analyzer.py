@@ -48,7 +48,7 @@ class AIAnalyzer:
 Is this text a valid NEWS ARTICLE HEADLINE?
 YES: "Global markets rally as inflation drops", "Regeringen varsler nye reformer"
 NO: "Menu", "Seneste nyt", "Mest læste", "Forside", "Log ind", "Abonnement"
-Return ONLY JSON: {"is_valid": true/false}"""
+Return ONLY JSON: {\"is_valid\": true/false}"""
             
             else: # content_selector
                 system_prompt = """You are a Quality Assurance bot for a News Scraper.
@@ -56,7 +56,7 @@ Is this text valid ARTICLE CONTENT (body text, lead paragraph, or paywall teaser
 YES: Narrative text, sentences, paragraphs. "Statsministeren udtalte i går..."
 YES (Paywall): "Det var en mørk aften... [Log ind for at læse mere]"
 NO: Lists of links ("Læs også: ..."), Navigation menus, Cookie banners, Footer text, Metadata only.
-Return ONLY JSON: {"is_valid": true/false}"""
+Return ONLY JSON: {\"is_valid\": true/false}"""
 
             user_prompt = f"Analyze:\n{clean_text[:500]}"
 
@@ -73,7 +73,7 @@ Return ONLY JSON: {"is_valid": true/false}"""
             content = response.choices[0].message.content.strip().replace('```json', '').replace('```', '')
             result = json.loads(content)
             
-            if not result.get('is_valid'):
+            if not result or not result.get('is_valid'):
                 print(f"      ⚠️ AI Rejected: Looks like noise/list")
                 return False
                 
@@ -83,13 +83,15 @@ Return ONLY JSON: {"is_valid": true/false}"""
             print(f"      ⚠️ Verification failed (failing open): {e}")
             return True
 
-    async def verify_search_pattern(self, pattern: str, domain: str) -> Optional[str]:
+    async def verify_search_pattern(self, pattern: str, domain: str, homepage_html: str = None) -> Optional[str]:
         """
         Verify that a search pattern actually works by testing it.
+        Performs checks for 200 OK and Soft 404s (redirect to homepage).
 
         Args:
             pattern: The search URL pattern (e.g., "https://domain.com/search?q={keyword}")
             domain: The domain name
+            homepage_html: Optional HTML of the homepage for comparison (Soft 404 check)
 
         Returns:
             Verified pattern if it works, None if it fails
@@ -106,6 +108,35 @@ Return ONLY JSON: {"is_valid": true/false}"""
                 response = await client.get(test_url, headers=headers)
 
                 if response.status_code == 200:
+                    # --- Check 1: Did it redirect to homepage? ---
+                    final_url = str(response.url).rstrip('/')
+                    homepage_url_https = f"https://{domain}".rstrip('/')
+                    homepage_url_http = f"http://{domain}".rstrip('/')
+                    
+                    if final_url == homepage_url_https or final_url == homepage_url_http:
+                        print(f"      ⚠️ Rejected: Redirected to homepage (Soft 404): {pattern}")
+                        return None
+
+                    # --- Check 2: Is content identical to homepage? (Soft 404 with same URL) ---
+                    if homepage_html:
+                        # Simple heuristic: Compare Page Titles
+                        try:
+                            # Parse only title to be fast
+                            if '<title>' in response.text and '<title>' in homepage_html:
+                                res_title_start = response.text.find('<title>') + 7
+                                res_title_end = response.text.find('</title>', res_title_start)
+                                res_title = response.text[res_title_start:res_title_end].strip()
+
+                                home_title_start = homepage_html.find('<title>') + 7
+                                home_title_end = homepage_html.find('</title>', home_title_start)
+                                home_title = homepage_html[home_title_start:home_title_end].strip()
+
+                                if res_title and res_title == home_title:
+                                    print(f"      ⚠️ Rejected: Page title identical to Homepage (Soft 404): {pattern}")
+                                    return None
+                        except Exception:
+                            pass # Fallback if parsing fails
+
                     print(f"      ✅ Search pattern verified: {pattern}")
                     return pattern
                 else:
@@ -116,13 +147,14 @@ Return ONLY JSON: {"is_valid": true/false}"""
             print(f"      ⚠️ Search pattern test failed: {e}")
             return None
 
-    async def try_common_search_patterns(self, domain: str, root_url: str) -> Optional[str]:
+    async def try_common_search_patterns(self, domain: str, root_url: str, homepage_html: str = None) -> Optional[str]:
         """
         Try common search URL patterns as fallback.
 
         Args:
             domain: The domain name
-            root_url: The root URL (e.g., "https://example.com")
+            root_url: The root URL
+            homepage_html: Optional homepage HTML for verification
 
         Returns:
             First working pattern or None
@@ -139,7 +171,7 @@ Return ONLY JSON: {"is_valid": true/false}"""
         print(f"   🔍 Trying common search patterns for {domain}...")
 
         for pattern in patterns:
-            verified = await self.verify_search_pattern(pattern, domain)
+            verified = await self.verify_search_pattern(pattern, domain, homepage_html)
             if verified:
                 return verified
 
@@ -168,7 +200,7 @@ Return ONLY JSON: {"is_valid": true/false}"""
 
             search_prompt = """Analyze this Homepage HTML and find the SEARCH URL pattern.
 Look for <form action=\"...\"> or <input name=\"q\">
-Return ONLY JSON: {"search_url_pattern": "https://domain.com/search?q={keyword}"} OR null."""
+Return ONLY JSON: {\"search_url_pattern\": \"https://domain.com/search?q={keyword}\"} OR null."""
 
             response = await client.chat.completions.create(
                 model="deepseek-chat",
@@ -181,7 +213,7 @@ Return ONLY JSON: {"search_url_pattern": "https://domain.com/search?q={keyword}"
 
             content = response.choices[0].message.content.strip().replace('```json', '').replace('```', '')
             search_res = json.loads(content)
-            pattern = search_res.get('search_url_pattern')
+            pattern = search_res.get('search_url_pattern') if search_res else None
 
             if pattern and '{keyword}' in pattern:
                 print(f"   🔍 AI suggested: {pattern}")
@@ -192,7 +224,7 @@ Return ONLY JSON: {"search_url_pattern": "https://domain.com/search?q={keyword}"
                 if domain.startswith('www.'):
                     domain = domain[4:]
 
-                verified_pattern = await self.verify_search_pattern(pattern, domain)
+                verified_pattern = await self.verify_search_pattern(pattern, domain, homepage_html)
 
         except Exception as e:
             print(f"   ❌ AI search pattern detection failed: {e}")
@@ -206,7 +238,7 @@ Return ONLY JSON: {"search_url_pattern": "https://domain.com/search?q={keyword}"
             if domain.startswith('www.'):
                 domain = domain[4:]
 
-            verified_pattern = await self.try_common_search_patterns(domain, root_url)
+            verified_pattern = await self.try_common_search_patterns(domain, root_url, homepage_html)
 
         # Store result
         if verified_pattern:
