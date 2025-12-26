@@ -9,6 +9,7 @@ from app.api.endpoints import (
     digests_supabase,
     chat_supabase,
     chat_history,
+    reports_supabase,
     admin_supabase,
     admin_sources
 )
@@ -25,5 +26,6 @@ api_router.include_router(scraping_supabase.router, prefix="/scraping", tags=["s
 api_router.include_router(digests_supabase.router, prefix="/digests", tags=["digests"])
 api_router.include_router(chat_supabase.router, prefix="/chat", tags=["chat"])
 api_router.include_router(chat_history.router, prefix="/chats", tags=["chats"])
+api_router.include_router(reports_supabase.router, prefix="/reports", tags=["reports"])
 api_router.include_router(admin_supabase.router, prefix="/admin", tags=["admin"])
 api_router.include_router(admin_sources.router, prefix="/admin/sources", tags=["admin-sources"])

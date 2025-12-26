@@ -73,6 +73,12 @@ def setup_logging():
     error_handler.setFormatter(detailed_formatter)
     root_logger.addHandler(error_handler)
 
+    # Enable DEBUG logging for AI and HTTP libraries
+    logging.getLogger('httpx').setLevel(logging.DEBUG)
+    logging.getLogger('httpcore').setLevel(logging.DEBUG)
+    logging.getLogger('pydantic_ai').setLevel(logging.DEBUG)
+    logging.getLogger('openai').setLevel(logging.DEBUG)
+
     logging.info("Logging configured successfully")
     logging.info(f"Logs directory: {log_dir}")
 

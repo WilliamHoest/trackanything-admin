@@ -5,36 +5,45 @@ Handles agent creation, caching, and tool registration.
 """
 
 import logging
-from typing import Dict
 from pydantic_ai import Agent, RunContext
 from .context import UserContext
-from .personas import build_context_message
-from .tools import web_search, fetch_page_content, analyze_mentions
+from .tools import web_search, fetch_page_content, analyze_mentions, fetch_mentions_for_report, save_report
 
 logger = logging.getLogger(__name__)
 
-# Agent cache (one per persona)
-_agent_cache: Dict[str, Agent] = {}
 
-
-def create_agent(persona: str) -> Agent:
-    """Create a new PydanticAI agent for a specific persona
+def create_agent_with_prompt(persona: str, system_prompt: str) -> Agent:
+    """Create a new PydanticAI agent with a specific system prompt
 
     Args:
-        persona: The persona type (general, pr_expert, etc.)
+        persona: The persona type (for logging)
+        system_prompt: The complete system prompt string
 
     Returns:
         Configured Agent instance with tools registered
     """
-    # Create agent with DeepSeek model
+    # Use OpenAI-compatible format for DeepSeek
+    # Set env vars for OpenAI SDK to use DeepSeek endpoint
+    import os
+    os.environ['OPENAI_BASE_URL'] = 'https://api.deepseek.com'
+    os.environ['OPENAI_API_KEY'] = os.getenv('DEEPSEEK_API_KEY', '')
+
+    # Use openai: prefix which will use the OPENAI_BASE_URL env var
     agent = Agent(
-        'deepseek:deepseek-chat',
+        'openai:deepseek-chat',
         deps_type=UserContext,
+        system_prompt=system_prompt,  # Static string!
         model_settings={
             'temperature': 0.7,
-            'max_tokens': 800,
-        }
+            'tool_choice': 'auto',  # Explicitly enable tool calling
+            # No max_tokens limit - let DeepSeek use what it needs for tool calls
+        },
+        retries=2  # Retry on tool call failures
     )
+
+    # Enable debug logging for HTTP requests
+    logging.getLogger('httpx').setLevel(logging.DEBUG)
+    logging.getLogger('pydantic_ai').setLevel(logging.DEBUG)
 
     # Register tool: web_search
     @agent.tool
@@ -80,21 +89,91 @@ def create_agent(persona: str) -> Agent:
         Returns:
             Formatted analysis of recent mentions with patterns and trends
         """
+        logger.info("🔧 TOOL CALLED: analyze_user_mentions")
         return await analyze_mentions(ctx.deps.recent_mentions)
 
-    logger.info(f"Created new agent for persona: {persona}")
+    # Register tool: fetch_mentions_for_report
+    @agent.tool
+    async def generate_report_data(ctx: RunContext[UserContext], brand_name: str, days_back: int) -> str:
+        """Fetch mentions for a specific brand and time period to generate a comprehensive report.
+
+        Use this when the user asks you to create a weekly report, crisis report,
+        or any custom analysis for a specific brand over a date range.
+
+        Args:
+            brand_name: The name of the brand to analyze (must match exactly)
+            days_back: Number of days back from today (e.g., 7 for weekly, 30 for monthly)
+
+        Returns:
+            Formatted mention data with statistics and samples ready for report generation
+        """
+        logger.info(f"🔧 TOOL CALLED: generate_report_data(brand_name={brand_name}, days_back={days_back})")
+        if not ctx.deps.crud:
+            return "❌ Error: Database access not available"
+
+        return await fetch_mentions_for_report(
+            crud=ctx.deps.crud,
+            user_id=ctx.deps.user_id,
+            brand_name=brand_name,
+            days_back=days_back,
+            brands=ctx.deps.brands
+        )
+
+    # Register tool: save_report
+    @agent.tool
+    async def save_generated_report(
+        ctx: RunContext[UserContext],
+        title: str,
+        content: str,
+        brand_name: str,
+        report_type: str
+    ) -> str:
+        """Save a generated report to the database for the user to access later.
+
+        After you've analyzed mention data and written a comprehensive Markdown report,
+        use this tool to save it. The user will be able to view it in the Report Archive.
+
+        Args:
+            title: Short descriptive title (e.g., "Weekly Report - Week 42, 2024")
+            content: Full report content in Markdown format with headings, lists, and formatting
+            brand_name: Name of the brand this report analyzes
+            report_type: Type of report - must be one of: "weekly", "crisis", "summary", or "custom"
+
+        Returns:
+            Success or error message
+        """
+        logger.info(f"🔧 TOOL CALLED: save_generated_report(title={title}, brand={brand_name}, type={report_type})")
+        if not ctx.deps.crud:
+            return "❌ Error: Database access not available"
+
+        return await save_report(
+            crud=ctx.deps.crud,
+            user_id=ctx.deps.user_id,
+            title=title,
+            content=content,
+            brand_name=brand_name,
+            report_type=report_type,
+            brands=ctx.deps.brands
+        )
+
+    # Debug: Inspect agent's registered tools
+    try:
+        import inspect
+        # Get all tool functions
+        tool_funcs = [
+            name for name, method in inspect.getmembers(agent)
+            if 'tool' in name.lower() or callable(method)
+        ]
+        logger.info(f"🔍 Agent methods: {tool_funcs[:10]}")  # First 10 to avoid spam
+
+        # Try to access the agent's internal function tools
+        if hasattr(agent, '_function_tools'):
+            logger.info(f"🔍 _function_tools: {len(agent._function_tools)} tools")
+        if hasattr(agent, 'functions'):
+            logger.info(f"🔍 functions: {agent.functions}")
+
+    except Exception as e:
+        logger.error(f"Error inspecting agent: {e}")
+
+    logger.info(f"✅ Created agent for persona: {persona} with 5 tools")
     return agent
-
-
-def get_agent_for_persona(persona: str = "general") -> Agent:
-    """Get or create cached agent for specific persona
-
-    Args:
-        persona: The persona type
-
-    Returns:
-        Cached or newly created Agent instance
-    """
-    if persona not in _agent_cache:
-        _agent_cache[persona] = create_agent(persona)
-    return _agent_cache[persona]

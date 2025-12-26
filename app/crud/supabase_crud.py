@@ -184,9 +184,10 @@ class SupabaseCRUD:
             return False
 
     # Mention CRUD
-    async def get_mentions_by_profile(self, profile_id: uuid.UUID, skip: int = 0, limit: int = 50, 
+    async def get_mentions_by_profile(self, profile_id: uuid.UUID, skip: int = 0, limit: int = 50,
                                     brand_id: Optional[int] = None, platform_id: Optional[int] = None,
-                                    read_status: Optional[bool] = None) -> List[Dict[str, Any]]:
+                                    read_status: Optional[bool] = None,
+                                    from_date: Optional[datetime] = None, to_date: Optional[datetime] = None) -> List[Dict[str, Any]]:
         """Get mentions with filtering"""
         try:
             # First get user's brand IDs
@@ -213,10 +214,17 @@ class SupabaseCRUD:
             # Apply additional filters
             if platform_id:
                 query = query.eq("platform_id", platform_id)
-            
+
             if read_status is not None:
                 query = query.eq("read_status", read_status)
-            
+
+            # Apply date range filters
+            if from_date:
+                query = query.gte("published_at", from_date.isoformat())
+
+            if to_date:
+                query = query.lte("published_at", to_date.isoformat())
+
             # Order by created_at descending and apply pagination
             query = query.order("created_at", desc=True).range(skip, skip + limit - 1)
 
@@ -626,6 +634,68 @@ class SupabaseCRUD:
         except Exception as e:
             print(f"Error creating message: {e}")
             return None
+
+    # Generated Reports CRUD
+    async def create_report(self, user_id: uuid.UUID, title: str, content: str,
+                          report_type: str, brand_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """Create a new generated report"""
+        try:
+            data = {
+                "user_id": str(user_id),
+                "title": title,
+                "content": content,
+                "report_type": report_type,
+                "brand_id": brand_id,
+                "created_at": datetime.utcnow().isoformat()
+            }
+            result = self.supabase.table("generated_reports").insert(data).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            print(f"Error creating report: {e}")
+            return None
+
+    async def get_reports_by_user(self, user_id: uuid.UUID, brand_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Get all reports for a user, optionally filtered by brand"""
+        try:
+            query = self.supabase.table("generated_reports").select("""
+                *,
+                brands(id, name)
+            """).eq("user_id", str(user_id))
+
+            # Filter by brand if specified
+            if brand_id is not None:
+                query = query.eq("brand_id", brand_id)
+
+            query = query.order("created_at", desc=True)
+            result = query.execute()
+            return result.data or []
+        except Exception as e:
+            print(f"Error getting reports by user: {e}")
+            return []
+
+    async def get_report_by_id(self, report_id: uuid.UUID, user_id: uuid.UUID) -> Optional[Dict[str, Any]]:
+        """Get a specific report by ID (with ownership check)"""
+        try:
+            result = self.supabase.table("generated_reports").select("""
+                *,
+                brands(id, name)
+            """).eq("id", str(report_id)).eq("user_id", str(user_id)).execute()
+
+            if result.data:
+                return result.data[0]
+            return None
+        except Exception as e:
+            print(f"Error getting report by id: {e}")
+            return None
+
+    async def delete_report(self, report_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+        """Delete a report (with ownership check)"""
+        try:
+            result = self.supabase.table("generated_reports").delete().eq("id", str(report_id)).eq("user_id", str(user_id)).execute()
+            return len(result.data) > 0
+        except Exception as e:
+            print(f"Error deleting report: {e}")
+            return False
 
 # Create singleton instance
 supabase_crud = SupabaseCRUD()

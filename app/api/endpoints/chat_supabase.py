@@ -82,7 +82,8 @@ async def stream_chat(
             },
             brands=[{"id": b["id"], "name": b["name"]} for b in brands],
             recent_mentions=recent_mentions[:50],  # Increased from 10 to 50 for tool access
-            recent_mentions_count=len(recent_mentions)
+            recent_mentions_count=len(recent_mentions),
+            crud=crud  # Pass CRUD instance for reporting tools
         )
 
         # Get persona from profile (future extension)
@@ -160,7 +161,8 @@ async def chat(
             },
             brands=[{"id": b["id"], "name": b["name"]} for b in brands],
             recent_mentions=recent_mentions[:20],  # Limited context for non-streaming
-            recent_mentions_count=len(recent_mentions)
+            recent_mentions_count=len(recent_mentions),
+            crud=crud  # Pass CRUD instance for reporting tools
         )
 
         # Get persona from profile (future extension)

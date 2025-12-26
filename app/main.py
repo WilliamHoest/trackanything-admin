@@ -9,6 +9,10 @@ import logging
 setup_logging()
 logger = logging.getLogger(__name__)
 
+# Enable detailed HTTP logging for debugging AI requests
+logging.getLogger('httpx').setLevel(logging.DEBUG)
+logging.getLogger('httpcore').setLevel(logging.DEBUG)
+
 app = FastAPI(
     title="TrackAnything Admin API",
     description="Backend API for TrackAnything admin application with Supabase REST API",
