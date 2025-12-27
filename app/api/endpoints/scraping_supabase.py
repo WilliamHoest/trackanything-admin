@@ -37,6 +37,7 @@ async def scrape_brand(
 ):
     """
     Run scraping process for all keywords in a specific brand scope
+    (Can scrape both active and inactive brands for manual scraping)
     """
     # Verify brand belongs to current user
     brand = await crud.get_brand(brand_id)
@@ -45,7 +46,7 @@ async def scrape_brand(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Brand not found"
         )
-    
+
     try:
         # Get all active topics for this brand
         topics = await crud.get_topics_by_brand(brand_id)
@@ -191,7 +192,11 @@ async def scrape_brand(
             mentions_saved, batch_errors = await crud.batch_create_mentions(mentions_to_insert)
             errors.extend(batch_errors)
             print(f"✅ Batch saved {mentions_saved} mentions for {brand['name']}")
-        
+
+        # 5. Update last_scraped_at timestamp for the brand
+        await crud.update_brand_last_scraped(brand_id)
+        print(f"✅ Updated last_scraped_at for brand '{brand['name']}'")
+
         return BrandScrapeResponse(
             message=f"Scraping completed for brand '{brand['name']}'",
             brand_id=brand_id,
@@ -240,22 +245,35 @@ async def scrape_user(
         total_mentions_saved = 0
         global_errors = []
         
-        # Process each brand
-        for brand in brands:
+        # Filter out inactive brands
+        active_brands = [b for b in brands if b.get("is_active", True)]
+
+        if not active_brands:
+            return UserScrapeResponse(
+                message="No active brands to scrape",
+                total_brands_processed=0,
+                total_mentions_found=0,
+                total_mentions_saved=0,
+                brand_results=[],
+                errors=["All brands are inactive"]
+            )
+
+        # Process each active brand
+        for brand in active_brands:
             try:
                 result = await scrape_brand(brand["id"], crud, current_user)
                 brand_results.append(result)
                 total_mentions_found += result.mentions_found
                 total_mentions_saved += result.mentions_saved
                 global_errors.extend(result.errors)
-                
+
             except Exception as e:
                 error_msg = f"Failed to process brand '{brand.get('name', 'Unknown')}': {str(e)}"
                 global_errors.append(error_msg)
                 print(f"❌ {error_msg}")
         
         return UserScrapeResponse(
-            message=f"Scraping completed for {len(brands)} brands",
+            message=f"Scraping completed for {len(active_brands)} active brands",
             total_brands_processed=len(brand_results),
             total_mentions_found=total_mentions_found,
             total_mentions_saved=total_mentions_saved,

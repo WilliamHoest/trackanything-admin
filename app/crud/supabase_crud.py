@@ -109,11 +109,22 @@ class SupabaseCRUD:
             existing = await self.get_brand(brand_id)
             if not existing or existing.get("profile_id") != str(profile_id):
                 return False
-            
+
             result = self.supabase.table("brands").delete().eq("id", brand_id).execute()
             return len(result.data) > 0
         except Exception as e:
             print(f"Error deleting brand: {e}")
+            return False
+
+    async def update_brand_last_scraped(self, brand_id: int) -> bool:
+        """Update brand's last_scraped_at timestamp"""
+        try:
+            result = self.supabase.table("brands").update({
+                "last_scraped_at": datetime.utcnow().isoformat()
+            }).eq("id", brand_id).execute()
+            return len(result.data) > 0
+        except Exception as e:
+            print(f"Error updating brand last_scraped_at: {e}")
             return False
 
     # Topic CRUD
