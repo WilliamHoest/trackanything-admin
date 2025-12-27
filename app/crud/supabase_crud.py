@@ -460,52 +460,59 @@ class SupabaseCRUD:
 
     async def batch_create_mentions(self, mentions_data: List[Dict[str, Any]]) -> tuple[int, List[str]]:
         """
-        Create multiple mentions in a single batch operation.
-
-        PERFORMANCE: Batch insertion is 10-50x faster than individual inserts
-        when dealing with 10+ mentions.
-
-        Args:
-            mentions_data: List of mention dictionaries
-
-        Returns:
-            Tuple of (successful_count, list_of_errors)
+        Create multiple mentions using chunked batch upserts.
+        Handles duplicates automatically using the post_link unique constraint.
         """
         if not mentions_data:
             return 0, []
 
-        try:
-            # Prepare all data for batch insert
-            batch_data = []
-            now = datetime.utcnow().isoformat()
+        total_saved = 0
+        errors = []
+        now = datetime.utcnow().isoformat()
+        
+        # 1. Pre-deduplicate in memory to reduce payload size
+        unique_mentions = {}
+        for m in mentions_data:
+            link = m.get("post_link")
+            if link:
+                unique_mentions[link] = m
+        
+        data_to_save = []
+        for link, m in unique_mentions.items():
+            data_to_save.append({
+                "caption": m.get("caption", m.get("title", "")),
+                "post_link": link,
+                "published_at": m.get("published_at", now),
+                "content_teaser": m.get("content_teaser"),
+                "platform_id": m.get("platform_id"),
+                "brand_id": m.get("brand_id"),
+                "topic_id": m.get("topic_id"),
+                "read_status": m.get("read_status", False),
+                "notified_status": m.get("notified_status", False),
+                "created_at": now
+            })
 
-            for mention_data in mentions_data:
-                data = {
-                    "caption": mention_data.get("caption", ""),
-                    "post_link": mention_data.get("post_link", ""),
-                    "published_at": mention_data.get("published_at", now),
-                    "content_teaser": mention_data.get("content_teaser"),
-                    "platform_id": mention_data.get("platform_id"),
-                    "brand_id": mention_data.get("brand_id"),
-                    "topic_id": mention_data.get("topic_id"),
-                    "read_status": mention_data.get("read_status", False),
-                    "notified_status": mention_data.get("notified_status", False),
-                    "created_at": now
-                }
-                batch_data.append(data)
+        # 2. Chunk processing (process 100 mentions at a time)
+        chunk_size = 100
+        for i in range(0, len(data_to_save), chunk_size):
+            chunk = data_to_save[i:i + chunk_size]
+            try:
+                # ignore_duplicates=True means "ON CONFLICT DO NOTHING"
+                result = self.supabase.table("mentions").upsert(
+                    chunk, 
+                    on_conflict="post_link", 
+                    ignore_duplicates=True
+                ).execute()
+                
+                if result.data:
+                    total_saved += len(result.data)
+            except Exception as e:
+                error_msg = f"Chunk error ({i}-{i+chunk_size}): {str(e)}"
+                print(f"❌ {error_msg}")
+                errors.append(error_msg)
 
-            # Single batch insert
-            result = self.supabase.table("mentions").insert(batch_data).execute()
-
-            successful_count = len(result.data) if result.data else 0
-            print(f"✅ Batch inserted {successful_count}/{len(mentions_data)} mentions")
-
-            return successful_count, []
-
-        except Exception as e:
-            error_msg = f"Batch insert failed: {e}"
-            print(f"❌ {error_msg}")
-            return 0, [error_msg]
+        print(f"✅ Batch complete: {total_saved} new mentions saved ({len(mentions_data) - total_saved} skipped/duplicates)")
+        return total_saved, errors
 
     # Utility functions for scraping
     async def get_all_user_keywords(self, profile_id: uuid.UUID) -> List[str]:
