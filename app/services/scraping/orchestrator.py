@@ -4,6 +4,7 @@ from typing import List, Dict
 from app.services.scraping.providers.gnews import scrape_gnews
 from app.services.scraping.providers.serpapi import scrape_serpapi
 from app.services.scraping.providers.configurable import scrape_configurable_sources
+from app.services.scraping.providers.rss import scrape_rss
 from app.services.scraping.core.text_processing import normalize_url, get_platform_from_url
 
 async def fetch_all_mentions(keywords: List[str]) -> List[Dict]:
@@ -25,16 +26,16 @@ async def fetch_all_mentions(keywords: List[str]) -> List[Dict]:
     # Run all scrapers in parallel
     # return_exceptions=True ensures one failure doesn't crash others
     results = await asyncio.gather(
-        # scrape_gnews(keywords),
-        # scrape_serpapi(keywords),
+        scrape_gnews(keywords),
+        scrape_serpapi(keywords),
         scrape_configurable_sources(keywords),
+        scrape_rss(keywords),
         return_exceptions=True
     )
 
     # Collect all mentions, handling exceptions
     all_mentions = []
-    # source_names = ["GNews", "SerpAPI", "Configurable Sources"] # Original
-    source_names = ["Configurable Sources"] # Adjusted for disabled sources
+    source_names = ["GNews", "SerpAPI", "Configurable Sources", "RSS Feed"]
 
     for idx, result in enumerate(results):
         source = source_names[idx]

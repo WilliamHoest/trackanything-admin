@@ -8,17 +8,21 @@ class BrandBase(BaseModel):
 
 class BrandCreate(BrandBase):
     scrape_frequency_hours: Optional[int] = 24
+    is_active: Optional[bool] = True
 
 class BrandUpdate(BaseModel):
     name: Optional[str] = None
     scrape_frequency_hours: Optional[int] = None
+    is_active: Optional[bool] = None
 
 class BrandResponse(BrandBase):
     id: int
     profile_id: uuid.UUID
     scrape_frequency_hours: int
+    is_active: bool
+    last_scraped_at: Optional[datetime] = None
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
 
