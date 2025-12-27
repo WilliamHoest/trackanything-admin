@@ -77,6 +77,7 @@ class SupabaseCRUD:
         try:
             data = {
                 "name": brand.name,
+                "description": brand.description,
                 "scrape_frequency_hours": brand.scrape_frequency_hours,
                 "profile_id": str(profile_id),
                 "created_at": datetime.utcnow().isoformat()

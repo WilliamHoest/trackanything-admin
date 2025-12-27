@@ -5,6 +5,7 @@ import uuid
 
 class BrandBase(BaseModel):
     name: str
+    description: Optional[str] = None
 
 class BrandCreate(BrandBase):
     scrape_frequency_hours: Optional[int] = 24
@@ -12,12 +13,14 @@ class BrandCreate(BrandBase):
 
 class BrandUpdate(BaseModel):
     name: Optional[str] = None
+    description: Optional[str] = None
     scrape_frequency_hours: Optional[int] = None
     is_active: Optional[bool] = None
 
 class BrandResponse(BrandBase):
     id: int
     profile_id: uuid.UUID
+    description: Optional[str] = None
     scrape_frequency_hours: int
     is_active: bool
     last_scraped_at: Optional[datetime] = None
