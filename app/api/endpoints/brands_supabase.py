@@ -8,7 +8,7 @@ from app.crud.supabase_crud import SupabaseCRUD
 
 router = APIRouter()
 
-@router.get("/", response_model=List[dict])
+@router.get("/", response_model=List[BrandResponse])
 async def get_brands(
     crud: SupabaseCRUD = Depends(get_supabase_crud),
     current_user = Depends(get_current_user)
@@ -23,7 +23,7 @@ async def get_brands(
 
     return brands
 
-@router.get("/{brand_id}", response_model=dict)
+@router.get("/{brand_id}", response_model=BrandResponse)
 async def get_brand(
     brand_id: int,
     crud: SupabaseCRUD = Depends(get_supabase_crud),
@@ -50,7 +50,7 @@ async def get_brand(
     
     return brand
 
-@router.post("/", response_model=dict, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=BrandResponse, status_code=status.HTTP_201_CREATED)
 async def create_brand(
     brand: BrandCreate,
     crud: SupabaseCRUD = Depends(get_supabase_crud),
@@ -65,7 +65,7 @@ async def create_brand(
         )
     return new_brand
 
-@router.put("/{brand_id}", response_model=dict)
+@router.put("/{brand_id}", response_model=BrandResponse)
 async def update_brand(
     brand_id: int,
     brand_update: BrandUpdate,
