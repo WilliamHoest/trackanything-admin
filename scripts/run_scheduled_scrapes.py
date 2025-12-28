@@ -2,25 +2,61 @@
 """
 Scheduled Scraping Script for TrackAnything
 
-This script is designed to be run by a cron job (e.g., hourly).
+This script is designed to be run by a cron job (e.g., Railway Cron Jobs).
 It fetches all active brands, determines which ones are due for scraping
 based on their scrape_frequency_hours, and processes them.
 
-Cron example (run every hour):
-0 * * * * cd /path/to/trackanything-admin && /path/to/venv/bin/python scripts/run_scheduled_scrapes.py >> logs/scraper.log 2>&1
+Railway Cron Job example (run every hour):
+0 * * * * python scripts/run_scheduled_scrapes.py
 """
 
 import sys
 import os
 import asyncio
+import logging
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Set
+from pathlib import Path
 
 # Add parent directory to path to allow importing app modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Ensure environment variables are loaded
+from dotenv import load_dotenv
+load_dotenv()
+
 from app.core.supabase_client import get_supabase_admin
 from app.services.scraping.orchestrator import fetch_all_mentions
+
+# Configure logging for Railway (stdout/stderr only, no file handlers)
+def setup_cron_logging():
+    """
+    Configure logging optimized for Railway Cron Jobs.
+    Logs to stdout only (no files) for Railway's log aggregation.
+    """
+    log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    date_format = '%Y-%m-%d %H:%M:%S'
+
+    # Configure root logger
+    logging.basicConfig(
+        level=logging.INFO,
+        format=log_format,
+        datefmt=date_format,
+        handlers=[
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+
+    # Set levels for noisy libraries
+    logging.getLogger('httpx').setLevel(logging.WARNING)
+    logging.getLogger('httpcore').setLevel(logging.WARNING)
+    logging.getLogger('urllib3').setLevel(logging.WARNING)
+
+    return logging.getLogger(__name__)
+
+# Initialize logger
+logger = setup_cron_logging()
+
 
 async def get_platform_id(supabase, platform_name: str) -> int:
     """Get or create platform ID from platforms table."""
@@ -33,10 +69,11 @@ async def get_platform_id(supabase, platform_name: str) -> int:
 
         # Create new platform if it doesn't exist
         insert_result = supabase.table("platforms").insert({"name": platform_name}).execute()
+        logger.info(f"Created new platform: {platform_name}")
         return insert_result.data[0]["id"]
 
     except Exception as e:
-        print(f"⚠️  Error getting platform ID for '{platform_name}': {e}")
+        logger.error(f"Error getting platform ID for '{platform_name}': {e}")
         # Default to a safe fallback (you may want to adjust this)
         return 1
 
@@ -58,16 +95,16 @@ async def scrape_brand(supabase, brand: Dict) -> Dict:
     brand_id = brand["id"]
     brand_name = brand["name"]
 
-    print(f"\n{'='*60}")
-    print(f"🔍 Processing Brand: {brand_name} (ID: {brand_id})")
-    print(f"{'='*60}")
+    logger.info("="*60)
+    logger.info(f"🔍 Processing Brand: {brand_name} (ID: {brand_id})")
+    logger.info("="*60)
 
     try:
         # 1. Fetch all active topics for this brand
         topics_result = supabase.table("topics").select("id, name").eq("brand_id", brand_id).eq("is_active", True).execute()
 
         if not topics_result.data:
-            print(f"⚠️  No active topics found for brand '{brand_name}'. Skipping.")
+            logger.warning(f"No active topics found for brand '{brand_name}'. Skipping.")
             return {
                 "brand_id": brand_id,
                 "brand_name": brand_name,
@@ -78,7 +115,7 @@ async def scrape_brand(supabase, brand: Dict) -> Dict:
             }
 
         topics = topics_result.data
-        print(f"📋 Found {len(topics)} active topic(s)")
+        logger.info(f"📋 Found {len(topics)} active topic(s)")
 
         # 2. Collect all keywords across all topics
         all_keywords = []
@@ -107,10 +144,10 @@ async def scrape_brand(supabase, brand: Dict) -> Dict:
 
             if topic_keywords:
                 all_keywords.extend(topic_keywords)
-                print(f"  📌 Topic '{topic_name}': {len(topic_keywords)} keyword(s)")
+                logger.info(f"  📌 Topic '{topic_name}': {len(topic_keywords)} keyword(s)")
 
         if not all_keywords:
-            print(f"⚠️  No keywords found for brand '{brand_name}'. Skipping.")
+            logger.warning(f"No keywords found for brand '{brand_name}'. Skipping.")
             return {
                 "brand_id": brand_id,
                 "brand_name": brand_name,
@@ -122,14 +159,14 @@ async def scrape_brand(supabase, brand: Dict) -> Dict:
 
         # Remove duplicates while preserving order
         unique_keywords = list(dict.fromkeys(all_keywords))
-        print(f"🔑 Total unique keywords: {len(unique_keywords)}")
+        logger.info(f"🔑 Total unique keywords: {len(unique_keywords)}")
 
         # 3. Fetch mentions from all sources
-        print(f"🚀 Starting scraping with {len(unique_keywords)} keyword(s)...")
+        logger.info(f"🚀 Starting scraping with {len(unique_keywords)} keyword(s)...")
         mentions = await fetch_all_mentions(unique_keywords)
 
         if not mentions:
-            print(f"✅ Scraping complete. No new mentions found for brand '{brand_name}'.")
+            logger.info(f"✅ Scraping complete. No new mentions found for brand '{brand_name}'.")
             return {
                 "brand_id": brand_id,
                 "brand_name": brand_name,
@@ -139,7 +176,7 @@ async def scrape_brand(supabase, brand: Dict) -> Dict:
                 "error": None
             }
 
-        print(f"✅ Found {len(mentions)} potential mention(s)")
+        logger.info(f"✅ Found {len(mentions)} potential mention(s)")
 
         # 4. Save mentions to database with deduplication
         saved_count = 0
@@ -193,21 +230,21 @@ async def scrape_brand(supabase, brand: Dict) -> Dict:
                 # Insert mention
                 supabase.table("mentions").insert(mention_data).execute()
                 saved_count += 1
-                print(f"  ✅ Saved: {mention.get('title', 'Uden titel')[:60]}")
+                logger.debug(f"  ✅ Saved: {mention.get('title', 'Uden titel')[:60]}")
 
             except Exception as mention_error:
-                print(f"  ❌ Failed to save mention: {mention_error}")
+                logger.error(f"  ❌ Failed to save mention: {mention_error}")
                 continue
 
         # CRITICAL: Update last_scraped_at timestamp to prevent constant scraping
         now_iso = datetime.now(timezone.utc).isoformat()
         supabase.table("brands").update({"last_scraped_at": now_iso}).eq("id", brand_id).execute()
-        print(f"✅ Updated last_scraped_at for brand '{brand_name}'")
+        logger.info(f"✅ Updated last_scraped_at for brand '{brand_name}'")
 
-        print(f"\n📊 Summary for '{brand_name}':")
-        print(f"  • Total mentions found: {len(mentions)}")
-        print(f"  • New mentions saved: {saved_count}")
-        print(f"  • Duplicates skipped: {skipped_count}")
+        logger.info(f"📊 Summary for '{brand_name}':")
+        logger.info(f"  • Total mentions found: {len(mentions)}")
+        logger.info(f"  • New mentions saved: {saved_count}")
+        logger.info(f"  • Duplicates skipped: {skipped_count}")
 
         return {
             "brand_id": brand_id,
@@ -220,9 +257,7 @@ async def scrape_brand(supabase, brand: Dict) -> Dict:
 
     except Exception as e:
         error_msg = f"Error scraping brand '{brand_name}': {str(e)}"
-        print(f"❌ {error_msg}")
-        import traceback
-        traceback.print_exc()
+        logger.error(error_msg, exc_info=True)
 
         return {
             "brand_id": brand_id,
@@ -243,15 +278,15 @@ async def main():
     2. For each brand, check if it's due for scraping based on scrape_frequency_hours
     3. Scrape and save mentions
     """
-    print(f"\n{'#'*60}")
-    print(f"# TrackAnything - Scheduled Scraper")
-    print(f"# Started at: {datetime.now(timezone.utc).isoformat()}")
-    print(f"{'#'*60}\n")
+    logger.info("#"*60)
+    logger.info("# TrackAnything - Scheduled Scraper")
+    logger.info(f"# Started at: {datetime.now(timezone.utc).isoformat()}")
+    logger.info("#"*60)
 
     try:
         # Initialize Supabase admin client (bypasses RLS)
         supabase = get_supabase_admin()
-        print("✅ Connected to Supabase")
+        logger.info("✅ Connected to Supabase")
 
         # Fetch all active brands with their scrape frequency and last scrape time
         brands_result = supabase.table("brands")\
@@ -260,11 +295,11 @@ async def main():
             .execute()
 
         if not brands_result.data:
-            print("⚠️  No active brands found. Exiting.")
+            logger.warning("⚠️  No active brands found. Exiting.")
             return
 
         brands = brands_result.data
-        print(f"📊 Found {len(brands)} active brand(s)\n")
+        logger.info(f"📊 Found {len(brands)} active brand(s)")
 
         # Determine which brands are due for scraping
         brands_to_scrape = []
@@ -280,7 +315,7 @@ async def main():
 
             if not last_scraped_at:
                 # Never scraped before - scrape immediately
-                print(f"✅ '{brand_name}': Aldrig scrapet før. Kører nu.")
+                logger.info(f"✅ '{brand_name}': Aldrig scrapet før. Kører nu.")
                 should_scrape = True
             else:
                 # Calculate time since last scrape
@@ -288,19 +323,19 @@ async def main():
                 hours_since = (current_time - last_scraped_time).total_seconds() / 3600
 
                 if hours_since >= scrape_frequency_hours:
-                    print(f"✅ '{brand_name}': Tid til update ({hours_since:.1f}t siden, frekvens: {scrape_frequency_hours}t)")
+                    logger.info(f"✅ '{brand_name}': Tid til update ({hours_since:.1f}t siden, frekvens: {scrape_frequency_hours}t)")
                     should_scrape = True
                 else:
-                    print(f"⏭️  '{brand_name}': Venter ({hours_since:.1f}t / {scrape_frequency_hours}t)")
+                    logger.info(f"⏭️  '{brand_name}': Venter ({hours_since:.1f}t / {scrape_frequency_hours}t)")
 
             if should_scrape:
                 brands_to_scrape.append(brand)
 
         if not brands_to_scrape:
-            print("\n✅ No brands are due for scraping at this time.")
+            logger.info("✅ No brands are due for scraping at this time.")
             return
 
-        print(f"\n🚀 Scraping {len(brands_to_scrape)} brand(s)...\n")
+        logger.info(f"🚀 Scraping {len(brands_to_scrape)} brand(s)...")
 
         # Process each brand
         results = []
@@ -309,34 +344,38 @@ async def main():
             results.append(result)
 
         # Print final summary
-        print(f"\n{'='*60}")
-        print(f"📊 FINAL SUMMARY")
-        print(f"{'='*60}")
+        logger.info("="*60)
+        logger.info("📊 FINAL SUMMARY")
+        logger.info("="*60)
 
         successful = sum(1 for r in results if r["success"])
         failed = sum(1 for r in results if not r["success"])
         total_mentions = sum(r["mentions_saved"] for r in results)
 
-        print(f"✅ Successful: {successful}/{len(results)}")
-        print(f"❌ Failed: {failed}/{len(results)}")
-        print(f"📝 Total new mentions saved: {total_mentions}")
+        logger.info(f"✅ Successful: {successful}/{len(results)}")
+        logger.info(f"❌ Failed: {failed}/{len(results)}")
+        logger.info(f"📝 Total new mentions saved: {total_mentions}")
 
         if failed > 0:
-            print(f"\n⚠️  Failed brands:")
+            logger.warning("⚠️  Failed brands:")
             for r in results:
                 if not r["success"]:
-                    print(f"  • {r['brand_name']}: {r['error']}")
+                    logger.error(f"  • {r['brand_name']}: {r['error']}")
 
-        print(f"\n{'='*60}")
-        print(f"✅ Scraping complete at {datetime.now(timezone.utc).isoformat()}")
-        print(f"{'='*60}\n")
+        logger.info("="*60)
+        logger.info(f"✅ Scraping complete at {datetime.now(timezone.utc).isoformat()}")
+        logger.info("="*60)
+
+        # Exit with error code if any brands failed
+        if failed > 0:
+            logger.warning(f"Exiting with code 1 due to {failed} failed brand(s)")
+            sys.exit(1)
 
     except Exception as e:
-        print(f"\n❌ FATAL ERROR: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        logger.critical(f"FATAL ERROR: {str(e)}", exc_info=True)
         sys.exit(1)
 
 
 if __name__ == "__main__":
+    # Run the async main function
     asyncio.run(main())

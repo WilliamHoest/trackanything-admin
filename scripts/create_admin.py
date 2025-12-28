@@ -11,9 +11,9 @@ from app.crud.supabase_crud import supabase_crud
 
 async def create_first_admin():
     # --- CONFIGURATION ---
-    EMAIL = "madsrunge@hotmail.dk"  # Update this if needed
-    PASSWORD = "Madsen10"  # CHANGE THIS!
-    NAME = "Mads Runge"
+    EMAIL = "Williamhoest@gmail.com"  # Update this if needed
+    PASSWORD = "Høst1234"  # CHANGE THIS!
+    NAME = "William Høst"
     COMPANY = "TrackAnything Admin"
     # ---------------------
 
