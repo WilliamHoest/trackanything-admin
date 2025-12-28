@@ -1,21 +1,17 @@
-# Use Python 3.9 slim image for smaller size
-FROM python:3.9-slim
+# Vi opgraderer til Python 3.11 for at understøtte nyeste uvicorn
+FROM python:3.11-slim
 
-# Set working directory
+# Sæt arbejdsmappen i containeren
 WORKDIR /app
 
-# Copy requirements file
+# Kopier requirements filen først (for bedre caching)
 COPY requirements.txt .
 
-# Install dependencies without cache to keep image small
+# Installer afhængigheder
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Kopier resten af koden
 COPY . .
 
-# Expose port (Railway will set the PORT env variable)
-EXPOSE $PORT
-
-# Run uvicorn server
-# Railway provides $PORT environment variable dynamically
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
+# Kommandoen der starter applikationen
+CMD uvicorn app.main:app --host 0.0.0.0 --port $PORT
