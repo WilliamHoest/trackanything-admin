@@ -97,7 +97,8 @@ async def _scrape_article_content(
         config = await _get_config_for_domain(domain)
 
         async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-            headers = {"User-Agent": get_random_user_agent()}
+            from app.services.scraping.core.http_client import get_default_headers
+            headers = get_default_headers()
             response = await fetch_with_retry(client, url, headers=headers)
             soup = BeautifulSoup(response.text, "lxml")
 

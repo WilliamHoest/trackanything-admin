@@ -34,7 +34,8 @@ async def scrape_serpapi(keywords: List[str]) -> List[Dict]:
 
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-            headers = {"User-Agent": get_random_user_agent()}
+            from app.services.scraping.core.http_client import get_default_headers
+            headers = get_default_headers()
             response = await fetch_with_retry(client, url, headers=headers, params=params)
             data = response.json()
 

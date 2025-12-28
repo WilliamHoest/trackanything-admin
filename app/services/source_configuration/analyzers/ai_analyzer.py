@@ -45,17 +45,24 @@ class AIAnalyzer:
             
             if type == 'title_selector':
                 system_prompt = """You are a Quality Assurance bot for a News Scraper.
-Is this text a valid NEWS ARTICLE HEADLINE?
-YES: "Global markets rally as inflation drops", "Regeringen varsler nye reformer"
-NO: "Menu", "Seneste nyt", "Mest læste", "Forside", "Log ind", "Abonnement"
+Is this text a valid NEWS ARTICLE HEADLINE or SOCIAL MEDIA POST TITLE?
+YES: "Global markets rally as inflation drops", "Regeringen varsler nye reformer", "Breaking: Major announcement today"
+NO: "Menu", "Seneste nyt", "Mest læste", "Forside", "Log ind", "Abonnement", "Share", "Comment", "Like"
+NO: Language selectors like "日本語", "Tiếng Việt", "English", "Dansk", "Español"
+NO: Navigation text like "Home", "About", "Contact", "Settings", "Profile"
 Return ONLY JSON: {\"is_valid\": true/false}"""
-            
+
             else: # content_selector
                 system_prompt = """You are a Quality Assurance bot for a News Scraper.
-Is this text valid ARTICLE CONTENT (body text, lead paragraph, or paywall teaser)?
+Is this text valid ARTICLE CONTENT or SOCIAL MEDIA POST (body text, lead paragraph, or paywall teaser)?
 YES: Narrative text, sentences, paragraphs. "Statsministeren udtalte i går..."
 YES (Paywall): "Det var en mørk aften... [Log ind for at læse mere]"
-NO: Lists of links ("Læs også: ..."), Navigation menus, Cookie banners, Footer text, Metadata only.
+YES (Social): User-generated content like comments, posts, discussions
+NO: Lists of links ("Læs også: ...", "Related articles"), Navigation menus, Cookie banners, Footer text, Metadata only
+NO: Language selector lists like "日本語 Tiếng Việt English Español Português Deutsch"
+NO: Heavy navigation elements like "Home About Contact Terms Privacy Policy"
+NO: Pure UI text like "Share Tweet Like Comment Subscribe Save"
+REJECT if text contains 5+ language names in a row (e.g., multiple of: English, Dansk, Deutsch, Français, Español, 日本語, 中文, etc.)
 Return ONLY JSON: {\"is_valid\": true/false}"""
 
             user_prompt = f"Analyze:\n{clean_text[:500]}"
@@ -103,8 +110,9 @@ Return ONLY JSON: {\"is_valid\": true/false}"""
         test_url = pattern.replace('{keyword}', 'test')
 
         try:
+            from app.services.scraping.core.http_client import get_default_headers
             async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-                headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
+                headers = get_default_headers()
                 response = await client.get(test_url, headers=headers)
 
                 if response.status_code == 200:
