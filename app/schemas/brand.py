@@ -31,8 +31,8 @@ class BrandResponse(BrandBase):
 
 # For nested responses
 class BrandWithTopics(BrandResponse):
-    topics: List["TopicResponse"] = []
+    topics: List["TopicWithKeywords"] = []
 
 # Import needed for forward reference
-from app.schemas.topic import TopicResponse
+from app.schemas.topic import TopicWithKeywords
 BrandWithTopics.model_rebuild()

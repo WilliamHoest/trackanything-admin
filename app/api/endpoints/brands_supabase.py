@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List
-from app.schemas.brand import BrandCreate, BrandUpdate, BrandResponse
+from app.schemas.brand import BrandCreate, BrandUpdate, BrandResponse, BrandWithTopics
+from app.schemas.topic import TopicWithKeywords
 from app.security.auth import get_current_user
 from app.core.config import settings
 from app.core.supabase_db import get_supabase_crud
@@ -8,15 +9,15 @@ from app.crud.supabase_crud import SupabaseCRUD
 
 router = APIRouter()
 
-@router.get("/", response_model=List[BrandResponse])
+@router.get("/", response_model=List[BrandWithTopics])
 async def get_brands(
     crud: SupabaseCRUD = Depends(get_supabase_crud),
     current_user = Depends(get_current_user)
 ):
-    """Get all brands for the current user with topics"""
+    """Get all brands for the current user with topics and keywords"""
     brands = await crud.get_brands_by_profile(current_user.id)
 
-    # Add topics to each brand
+    # Add topics with keywords to each brand
     for brand in brands:
         topics = await crud.get_topics_by_brand(brand["id"])
         brand["topics"] = topics
