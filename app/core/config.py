@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     supabase_key: str
     supabase_service_role_key: str  # Needed for admin operations (creating users)
     deepseek_api_key: str
+    deepseek_model: str = "deepseek-chat"  # DeepSeek V3 model for relevance filtering
     gnews_api_key: str
     serpapi_key: str
     tavily_api_key: str = ""  # Optional web search tool

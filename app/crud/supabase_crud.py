@@ -272,19 +272,22 @@ class SupabaseCRUD:
     async def get_keywords_by_topic(self, topic_id: int) -> List[Dict[str, Any]]:
         """Get keywords for a topic via junction table"""
         try:
-            # Query topic_keywords junction table and join with keywords
-            result = self.supabase.table("topic_keywords").select("""
-                keyword_id,
-                keywords(*)
-            """).eq("topic_id", topic_id).execute()
+            # Step 1: Get keyword IDs from junction table
+            junction_result = self.supabase.table("topic_keywords").select("keyword_id").eq("topic_id", topic_id).execute()
 
-            # Extract keywords from nested structure
-            keywords = []
-            for item in result.data or []:
-                if item.get("keywords"):
-                    keywords.append(item["keywords"])
+            if not junction_result.data:
+                return []
 
-            return keywords
+            # Step 2: Extract keyword IDs
+            keyword_ids = [item["keyword_id"] for item in junction_result.data]
+
+            if not keyword_ids:
+                return []
+
+            # Step 3: Fetch keywords by IDs
+            keywords_result = self.supabase.table("keywords").select("*").in_("id", keyword_ids).execute()
+
+            return keywords_result.data or []
         except Exception as e:
             print(f"Error getting keywords by topic: {e}")
             return []
@@ -461,7 +464,8 @@ class SupabaseCRUD:
     async def batch_create_mentions(self, mentions_data: List[Dict[str, Any]]) -> tuple[int, List[str]]:
         """
         Create multiple mentions using chunked batch upserts.
-        Handles duplicates automatically using the post_link unique constraint.
+        Handles duplicates automatically using the (post_link, topic_id) unique constraint.
+        This allows multiple brands to track the same URL.
         """
         if not mentions_data:
             return 0, []
@@ -470,15 +474,18 @@ class SupabaseCRUD:
         errors = []
         now = datetime.utcnow().isoformat()
         
-        # 1. Pre-deduplicate in memory to reduce payload size
+        # 1. Pre-deduplicate in memory (per topic)
         unique_mentions = {}
         for m in mentions_data:
             link = m.get("post_link")
-            if link:
-                unique_mentions[link] = m
+            topic_id = m.get("topic_id")
+            if link and topic_id:
+                # Key is now combination of link AND topic_id
+                key = (link, topic_id)
+                unique_mentions[key] = m
         
         data_to_save = []
-        for link, m in unique_mentions.items():
+        for (link, _), m in unique_mentions.items():
             data_to_save.append({
                 "caption": m.get("caption", m.get("title", "")),
                 "post_link": link,
@@ -498,9 +505,10 @@ class SupabaseCRUD:
             chunk = data_to_save[i:i + chunk_size]
             try:
                 # ignore_duplicates=True means "ON CONFLICT DO NOTHING"
+                # Updated to use composite key (post_link, topic_id)
                 result = self.supabase.table("mentions").upsert(
                     chunk, 
-                    on_conflict="post_link", 
+                    on_conflict="post_link, topic_id", 
                     ignore_duplicates=True
                 ).execute()
                 

@@ -6,7 +6,7 @@ from app.security.auth import get_current_user
 from app.core.config import settings
 from app.core.supabase_db import get_supabase_crud
 from app.crud.supabase_crud import SupabaseCRUD
-from app.services.scraping.orchestrator import fetch_all_mentions
+from app.services.scraping.orchestrator import fetch_all_mentions, fetch_and_filter_mentions
 import logging
 
 router = APIRouter()
@@ -63,16 +63,21 @@ async def scrape_brand(
                 errors=["No active topics found for this brand"]
             )
         
-        # Collect all keywords from all active topics
-        all_keywords = set()
+        # Collect all keywords from all active topics and combine with Brand Name
+        # This creates "Context Aware" search queries (e.g. "Mærsk Regnskab" instead of just "Regnskab")
+        search_queries = set()
         for topic in active_topics:
             keywords = await crud.get_keywords_by_topic(topic["id"])
             for keyword in keywords:
-                all_keywords.add(keyword["text"])
+                # Construct query: "{Topic Name}" {Keyword}
+                # Changed from Brand+Keyword to Topic+Keyword per user request for better specificity.
+                # NOTE: This requires Topics to be named descriptively (e.g. "Lego Sustainability" rather than just "General")
+                query = f'"{topic["name"]}" {keyword["text"]}'
+                search_queries.add(query)
         
-        keyword_list = list(all_keywords)
+        query_list = list(search_queries)
         
-        if not keyword_list:
+        if not query_list:
             return BrandScrapeResponse(
                 message=f"No keywords found for brand '{brand['name']}'",
                 brand_id=brand_id,
@@ -83,15 +88,15 @@ async def scrape_brand(
                 errors=["No keywords configured for this brand"]
             )
         
-        # Fetch mentions from all sources (async with parallel execution)
-        mentions = await fetch_all_mentions(keyword_list)
+        # Fetch mentions using the improved search queries with AI relevance filtering
+        mentions = await fetch_and_filter_mentions(query_list, apply_relevance_filter=True)
 
         if not mentions:
             return BrandScrapeResponse(
                 message=f"No mentions found for brand '{brand['name']}'",
                 brand_id=brand_id,
                 brand_name=brand["name"],
-                keywords_used=keyword_list,
+                keywords_used=query_list,
                 mentions_found=0,
                 mentions_saved=0,
                 errors=[]
@@ -201,7 +206,7 @@ async def scrape_brand(
             message=f"Scraping completed for brand '{brand['name']}'",
             brand_id=brand_id,
             brand_name=brand["name"],
-            keywords_used=keyword_list,
+            keywords_used=query_list,
             mentions_found=len(mentions),
             mentions_saved=mentions_saved,
             errors=errors
