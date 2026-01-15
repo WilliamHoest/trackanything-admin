@@ -181,6 +181,26 @@ async def scrape_brand(supabase, brand: Dict) -> Dict:
         # 4. Save mentions to database with deduplication
         saved_count = 0
         skipped_count = 0
+        topic_counts = {t["id"]: 0 for t in topics}  # Track mentions per topic
+        keyword_counts = {kw: 0 for kw in topic_keyword_map.keys()}  # Track mentions per keyword
+
+        def find_matching_topic_and_keyword(mention_text: str, keyword_map: Dict, default_topic_id: int) -> tuple:
+            """
+            Find the best matching topic for a mention based on keyword matching.
+            Returns (topic_id, matched_keyword) - keyword is None if no match found.
+            """
+            mention_lower = mention_text.lower()
+
+            # Check each keyword - prioritize longer keywords first (more specific matches)
+            sorted_keywords = sorted(keyword_map.keys(), key=len, reverse=True)
+
+            for keyword in sorted_keywords:
+                if keyword.lower() in mention_lower:
+                    # Return the topic and the matched keyword
+                    return keyword_map[keyword][0], keyword
+
+            # No match found - return default with no keyword
+            return default_topic_id, None
 
         for mention in mentions:
             try:
@@ -188,10 +208,13 @@ async def scrape_brand(supabase, brand: Dict) -> Dict:
                 platform_name = mention.get("platform", "Unknown")
                 platform_id = await get_platform_id(supabase, platform_name)
 
-                # Determine which topic(s) to assign this mention to
-                # For simplicity, assign to the first topic that matches any keyword in the mention
-                # (In a more sophisticated system, you'd do keyword matching per mention)
-                assigned_topic_id = topics[0]["id"]  # Default to first topic
+                # Determine which topic to assign this mention to based on keyword matching
+                mention_text = f"{mention.get('title', '')} {mention.get('content_teaser', '')}"
+                assigned_topic_id, matched_keyword = find_matching_topic_and_keyword(
+                    mention_text,
+                    topic_keyword_map,
+                    topics[0]["id"]  # Fallback to first topic if no match
+                )
 
                 # Check if this mention already exists for this brand
                 link = mention.get("link")
@@ -230,7 +253,14 @@ async def scrape_brand(supabase, brand: Dict) -> Dict:
                 # Insert mention
                 supabase.table("mentions").insert(mention_data).execute()
                 saved_count += 1
-                logger.debug(f"  ✅ Saved: {mention.get('title', 'Uden titel')[:60]}")
+                topic_counts[assigned_topic_id] = topic_counts.get(assigned_topic_id, 0) + 1
+                if matched_keyword:
+                    keyword_counts[matched_keyword] = keyword_counts.get(matched_keyword, 0) + 1
+
+                # Find topic name for logging
+                topic_name = next((t["name"] for t in topics if t["id"] == assigned_topic_id), "Unknown")
+                keyword_info = f" (keyword: '{matched_keyword}')" if matched_keyword else " (no keyword match)"
+                logger.debug(f"  ✅ Saved to '{topic_name}'{keyword_info}: {mention.get('title', 'Uden titel')[:40]}")
 
             except Exception as mention_error:
                 logger.error(f"  ❌ Failed to save mention: {mention_error}")
@@ -245,6 +275,19 @@ async def scrape_brand(supabase, brand: Dict) -> Dict:
         logger.info(f"  • Total mentions found: {len(mentions)}")
         logger.info(f"  • New mentions saved: {saved_count}")
         logger.info(f"  • Duplicates skipped: {skipped_count}")
+        logger.info(f"  • Distribution per topic:")
+        for topic in topics:
+            count = topic_counts.get(topic["id"], 0)
+            logger.info(f"    - {topic['name']}: {count}")
+
+        # Log keyword performance - sort by count descending
+        logger.info(f"  • Keyword performance:")
+        sorted_keywords = sorted(keyword_counts.items(), key=lambda x: x[1], reverse=True)
+        for keyword, count in sorted_keywords:
+            if count > 0:
+                logger.info(f"    ✅ '{keyword}': {count} mention(s)")
+            else:
+                logger.info(f"    ❌ '{keyword}': 0 mentions")
 
         return {
             "brand_id": brand_id,
