@@ -5,8 +5,6 @@ from app.schemas import (
     brand as brand_schemas,
     topic as topic_schemas,
     keyword as keyword_schemas,
-    mention as mention_schemas,
-    platform as platform_schemas,
     profile as profile_schemas,
     source_config as source_config_schemas,
 )
