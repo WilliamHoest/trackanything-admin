@@ -41,9 +41,9 @@ class MentionKeywordMatch(BaseModel):
 
 # For nested responses
 class MentionWithDetails(MentionResponse):
-    platform: "PlatformResponse"
-    brand: "BrandResponse"
-    topic: "TopicResponse"
+    platform: Optional["PlatformResponse"] = None
+    brand: Optional["BrandResponse"] = None
+    topic: Optional["TopicResponse"] = None
 
 # Import needed for forward references
 from app.schemas.platform import PlatformResponse
