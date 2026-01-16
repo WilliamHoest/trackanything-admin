@@ -5,6 +5,7 @@ from datetime import datetime
 class TopicBase(BaseModel):
     name: str
     description: Optional[str] = None
+    query_template: Optional[str] = None
     is_active: bool = True
 
 class TopicCreate(TopicBase):
@@ -13,6 +14,7 @@ class TopicCreate(TopicBase):
 class TopicUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    query_template: Optional[str] = None
     is_active: Optional[bool] = None
     keyword_ids: Optional[List[int]] = None
 

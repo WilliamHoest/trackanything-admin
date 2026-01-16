@@ -1,4 +1,4 @@
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from supabase import Client
 from app.core.supabase_client import get_supabase
 from app.schemas import (
@@ -165,6 +165,7 @@ class SupabaseCRUD:
             data = {
                 "name": topic.name,
                 "brand_id": brand_id,
+                "query_template": getattr(topic, "query_template", None),
                 "is_active": topic.is_active if hasattr(topic, 'is_active') else True,
                 "created_at": datetime.utcnow().isoformat()
             }
@@ -218,7 +219,8 @@ class SupabaseCRUD:
                 *,
                 brands(*),
                 topics(*),
-                platforms(*)
+                platforms(*),
+                mention_keywords(keyword_id, matched_in, score, keywords(*))
             """).in_("brand_id", user_brand_ids)
             
             # Apply additional filters
@@ -249,6 +251,17 @@ class SupabaseCRUD:
                     mention["topic"] = mention.pop("topics")
                 if "platforms" in mention:
                     mention["platform"] = mention.pop("platforms")
+                if "mention_keywords" in mention:
+                    keyword_matches = []
+                    for match in mention.pop("mention_keywords") or []:
+                        keyword = match.get("keywords")
+                        if keyword:
+                            keyword_matches.append({
+                                "keyword": keyword,
+                                "matched_in": match.get("matched_in"),
+                                "score": match.get("score")
+                            })
+                    mention["keyword_matches"] = keyword_matches
 
             return mentions
         except Exception as e:
@@ -449,6 +462,7 @@ class SupabaseCRUD:
                 "platform_id": mention_data.get("platform_id"),
                 "brand_id": mention_data.get("brand_id"),
                 "topic_id": mention_data.get("topic_id"),
+                "primary_keyword_id": mention_data.get("primary_keyword_id"),
                 "read_status": mention_data.get("read_status", False),
                 "notified_status": mention_data.get("notified_status", False),
                 "created_at": datetime.utcnow().isoformat()
@@ -492,6 +506,7 @@ class SupabaseCRUD:
                 "platform_id": m.get("platform_id"),
                 "brand_id": m.get("brand_id"),
                 "topic_id": m.get("topic_id"),
+                "primary_keyword_id": m.get("primary_keyword_id"),
                 "read_status": m.get("read_status", False),
                 "notified_status": m.get("notified_status", False),
                 "created_at": now
@@ -519,6 +534,68 @@ class SupabaseCRUD:
 
         print(f"✅ Batch complete: {total_saved} new mentions saved ({len(mentions_data) - total_saved} skipped/duplicates)")
         return total_saved, errors
+
+    async def get_mentions_by_keys(
+        self,
+        brand_id: int,
+        keys: List[Tuple[str, int]]
+    ) -> Dict[Tuple[str, int], int]:
+        """Fetch mention IDs for (post_link, topic_id) pairs scoped to a brand."""
+        if not keys:
+            return {}
+
+        post_links = list({key[0] for key in keys})
+        topic_ids = list({key[1] for key in keys})
+        key_set = set(keys)
+
+        try:
+            result = self.supabase.table("mentions").select(
+                "id, post_link, topic_id"
+            ).eq("brand_id", brand_id).in_("post_link", post_links).in_("topic_id", topic_ids).execute()
+            mentions = result.data or []
+            return {
+                (m["post_link"], m["topic_id"]): m["id"]
+                for m in mentions
+                if (m["post_link"], m["topic_id"]) in key_set
+            }
+        except Exception as e:
+            print(f"Error getting mentions by keys: {e}")
+            return {}
+
+    async def batch_create_mention_keywords(self, matches: List[Dict[str, Any]]) -> List[str]:
+        """Create mention-keyword relations in batch with de-duplication."""
+        if not matches:
+            return []
+
+        errors = []
+        now = datetime.utcnow().isoformat()
+        data_to_save = [
+            {
+                "mention_id": m["mention_id"],
+                "keyword_id": m["keyword_id"],
+                "matched_in": m.get("matched_in"),
+                "score": m.get("score"),
+                "created_at": now
+            }
+            for m in matches
+            if m.get("mention_id") and m.get("keyword_id")
+        ]
+
+        chunk_size = 200
+        for i in range(0, len(data_to_save), chunk_size):
+            chunk = data_to_save[i:i + chunk_size]
+            try:
+                self.supabase.table("mention_keywords").upsert(
+                    chunk,
+                    on_conflict="mention_id, keyword_id",
+                    ignore_duplicates=True
+                ).execute()
+            except Exception as e:
+                error_msg = f"Mention-keyword chunk error ({i}-{i+chunk_size}): {str(e)}"
+                print(f"❌ {error_msg}")
+                errors.append(error_msg)
+
+        return errors
 
     # Utility functions for scraping
     async def get_all_user_keywords(self, profile_id: uuid.UUID) -> List[str]:

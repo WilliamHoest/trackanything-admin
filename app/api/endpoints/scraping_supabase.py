@@ -12,6 +12,46 @@ import logging
 router = APIRouter()
 scraping_logger = logging.getLogger("scraping")
 
+def build_search_query(topic: Dict, keyword_text: str, brand_name: str) -> str:
+    template = topic.get("query_template")
+    if template:
+        return (
+            template
+            .replace("{{topic}}", topic.get("name", ""))
+            .replace("{{keyword}}", keyword_text)
+            .replace("{{brand}}", brand_name)
+            .strip()
+        )
+    return f"\"{topic['name']}\" {keyword_text}"
+
+def score_topic_match(topic_keywords: List[Dict], title: str, teaser: str) -> tuple[int, List[Dict]]:
+    matches = []
+    score = 0
+
+    for keyword in topic_keywords:
+        keyword_text = keyword.get("text", "").lower()
+        if not keyword_text:
+            continue
+
+        in_title = keyword_text in title
+        in_teaser = keyword_text in teaser
+        if not (in_title or in_teaser):
+            continue
+
+        matched_in = "both" if in_title and in_teaser else "title" if in_title else "teaser"
+        keyword_score = (2 if in_title else 0) + (1 if in_teaser else 0)
+        if len(keyword_text) >= 8:
+            keyword_score += 1
+
+        matches.append({
+            "keyword": keyword,
+            "matched_in": matched_in,
+            "score": keyword_score
+        })
+        score += keyword_score
+
+    return score, matches
+
 class BrandScrapeResponse(BaseModel):
     message: str
     brand_id: int
@@ -69,11 +109,11 @@ async def scrape_brand(
         for topic in active_topics:
             keywords = await crud.get_keywords_by_topic(topic["id"])
             for keyword in keywords:
-                # Construct query: "{Topic Name}" {Keyword}
-                # Changed from Brand+Keyword to Topic+Keyword per user request for better specificity.
+                # Construct query using optional template if configured.
                 # NOTE: This requires Topics to be named descriptively (e.g. "Lego Sustainability" rather than just "General")
-                query = f'"{topic["name"]}" {keyword["text"]}'
-                search_queries.add(query)
+                query = build_search_query(topic, keyword["text"], brand["name"])
+                if query:
+                    search_queries.add(query)
         
         query_list = list(search_queries)
         
@@ -140,6 +180,7 @@ async def scrape_brand(
 
         # 3. Build all mention objects (no database writes yet)
         mentions_to_insert = []
+        mention_keyword_matches = {}
 
         for mention in mentions:
             try:
@@ -158,18 +199,32 @@ async def scrape_brand(
 
                 # Find best matching topic based on keywords in mention (using cache)
                 best_topic = None
+                best_topic_score = -1
+                best_topic_matches = []
+                title = (mention.get("title") or "").lower()
+                teaser = (mention.get("content_teaser") or "").lower()
+
                 for topic in active_topics:
                     topic_keywords = topic_keywords_cache.get(topic["id"], [])
-                    for keyword in topic_keywords:
-                        if keyword["text"].lower() in mention.get("title", "").lower():
-                            best_topic = topic
-                            break
-                    if best_topic:
-                        break
+                    topic_score, topic_matches = score_topic_match(topic_keywords, title, teaser)
+                    if topic_score > best_topic_score:
+                        best_topic_score = topic_score
+                        best_topic = topic
+                        best_topic_matches = topic_matches
 
                 # If no keyword match found, use first active topic
                 if not best_topic:
                     best_topic = active_topics[0]
+                    best_topic_matches = []
+
+                primary_keyword_id = None
+                if best_topic_matches:
+                    best_match = sorted(
+                        best_topic_matches,
+                        key=lambda match: (match["score"], len(match["keyword"].get("text", ""))),
+                        reverse=True
+                    )[0]
+                    primary_keyword_id = best_match["keyword"].get("id")
 
                 # Create mention object
                 mention_data = {
@@ -180,11 +235,23 @@ async def scrape_brand(
                     "platform_id": platform["id"],
                     "brand_id": brand_id,
                     "topic_id": best_topic["id"],
+                    "primary_keyword_id": primary_keyword_id,
                     "read_status": False,
                     "notified_status": False
                 }
 
                 mentions_to_insert.append(mention_data)
+
+                if best_topic_matches and mention_data["post_link"]:
+                    mention_key = (mention_data["post_link"], mention_data["topic_id"])
+                    mention_keyword_matches[mention_key] = [
+                        {
+                            "keyword_id": match["keyword"]["id"],
+                            "matched_in": match["matched_in"],
+                            "score": match["score"]
+                        }
+                        for match in best_topic_matches
+                    ]
 
             except Exception as e:
                 error_msg = f"Error preparing mention '{mention.get('title', 'Unknown')}': {str(e)}"
@@ -197,6 +264,23 @@ async def scrape_brand(
             mentions_saved, batch_errors = await crud.batch_create_mentions(mentions_to_insert)
             errors.extend(batch_errors)
             print(f"✅ Batch saved {mentions_saved} mentions for {brand['name']}")
+
+        if mention_keyword_matches:
+            mention_id_map = await crud.get_mentions_by_keys(brand_id, list(mention_keyword_matches.keys()))
+            mention_keyword_rows = []
+            for mention_key, matches in mention_keyword_matches.items():
+                mention_id = mention_id_map.get(mention_key)
+                if not mention_id:
+                    continue
+                for match in matches:
+                    mention_keyword_rows.append({
+                        "mention_id": mention_id,
+                        **match
+                    })
+
+            if mention_keyword_rows:
+                match_errors = await crud.batch_create_mention_keywords(mention_keyword_rows)
+                errors.extend(match_errors)
 
         # 5. Update last_scraped_at timestamp for the brand
         await crud.update_brand_last_scraped(brand_id)
