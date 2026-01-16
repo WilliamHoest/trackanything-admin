@@ -58,23 +58,38 @@ def setup_cron_logging():
 logger = setup_cron_logging()
 
 
-async def get_platform_id(supabase, platform_name: str) -> int:
-    """Get or create platform ID from platforms table."""
+# Global platform cache to avoid repeated DB lookups
+_platform_cache: Dict[str, int] = {}
+
+async def load_platform_cache(supabase) -> None:
+    """Pre-load all platforms into cache for fast lookup."""
+    global _platform_cache
     try:
-        # Try to get existing platform
-        result = supabase.table("platforms").select("id").eq("name", platform_name).execute()
+        result = supabase.table("platforms").select("id, name").execute()
+        _platform_cache = {p["name"]: p["id"] for p in result.data}
+        logger.info(f"📦 Loaded {len(_platform_cache)} platforms into cache")
+    except Exception as e:
+        logger.error(f"Error loading platform cache: {e}")
+        _platform_cache = {}
 
-        if result.data and len(result.data) > 0:
-            return result.data[0]["id"]
+async def get_platform_id(supabase, platform_name: str) -> int:
+    """Get or create platform ID from platforms table (with caching)."""
+    global _platform_cache
 
+    # Check cache first
+    if platform_name in _platform_cache:
+        return _platform_cache[platform_name]
+
+    try:
         # Create new platform if it doesn't exist
         insert_result = supabase.table("platforms").insert({"name": platform_name}).execute()
+        platform_id = insert_result.data[0]["id"]
+        _platform_cache[platform_name] = platform_id
         logger.info(f"Created new platform: {platform_name}")
-        return insert_result.data[0]["id"]
+        return platform_id
 
     except Exception as e:
         logger.error(f"Error getting platform ID for '{platform_name}': {e}")
-        # Default to a safe fallback (you may want to adjust this)
         return 1
 
 
@@ -178,7 +193,7 @@ async def scrape_brand(supabase, brand: Dict) -> Dict:
 
         logger.info(f"✅ Found {len(mentions)} potential mention(s)")
 
-        # 4. Save mentions to database with deduplication
+        # 4. Save mentions to database with OPTIMIZED batch operations
         saved_count = 0
         skipped_count = 0
         topic_counts = {t["id"]: 0 for t in topics}  # Track mentions per topic
@@ -202,9 +217,28 @@ async def scrape_brand(supabase, brand: Dict) -> Dict:
             # No match found - return default with no keyword
             return default_topic_id, None
 
+        # OPTIMIZATION 1: Batch fetch all existing URLs for this brand (1 query instead of N)
+        existing_result = supabase.table("mentions")\
+            .select("post_link")\
+            .eq("brand_id", brand_id)\
+            .execute()
+        existing_urls = {row["post_link"] for row in existing_result.data} if existing_result.data else set()
+        logger.info(f"📦 Loaded {len(existing_urls)} existing URLs for deduplication")
+
+        # OPTIMIZATION 2: Prepare all mentions in memory first
+        mentions_to_insert = []
+        import time as time_module  # Import once, not per mention
+
         for mention in mentions:
             try:
-                # Get platform ID
+                link = mention.get("link")
+
+                # In-memory duplicate check (instant, no DB query)
+                if link in existing_urls:
+                    skipped_count += 1
+                    continue
+
+                # Get platform ID (from cache - no DB query if cached)
                 platform_name = mention.get("platform", "Unknown")
                 platform_id = await get_platform_id(supabase, platform_name)
 
@@ -216,25 +250,11 @@ async def scrape_brand(supabase, brand: Dict) -> Dict:
                     topics[0]["id"]  # Fallback to first topic if no match
                 )
 
-                # Check if this mention already exists for this brand
-                link = mention.get("link")
-                existing = supabase.table("mentions")\
-                    .select("id")\
-                    .eq("post_link", link)\
-                    .eq("brand_id", brand_id)\
-                    .execute()
-
-                if existing.data and len(existing.data) > 0:
-                    skipped_count += 1
-                    continue  # Skip duplicate
-
                 # Prepare mention data
                 published_at = None
                 if "published_parsed" in mention and mention["published_parsed"]:
-                    # Convert time.struct_time to datetime
-                    import time
                     published_at = datetime.fromtimestamp(
-                        time.mktime(mention["published_parsed"]),
+                        time_module.mktime(mention["published_parsed"]),
                         tz=timezone.utc
                     ).isoformat()
 
@@ -250,21 +270,43 @@ async def scrape_brand(supabase, brand: Dict) -> Dict:
                     "content_teaser": mention.get("content_teaser", "")
                 }
 
-                # Insert mention
-                supabase.table("mentions").insert(mention_data).execute()
-                saved_count += 1
-                topic_counts[assigned_topic_id] = topic_counts.get(assigned_topic_id, 0) + 1
-                if matched_keyword:
-                    keyword_counts[matched_keyword] = keyword_counts.get(matched_keyword, 0) + 1
+                mentions_to_insert.append((mention_data, assigned_topic_id, matched_keyword))
 
-                # Find topic name for logging
-                topic_name = next((t["name"] for t in topics if t["id"] == assigned_topic_id), "Unknown")
-                keyword_info = f" (keyword: '{matched_keyword}')" if matched_keyword else " (no keyword match)"
-                logger.debug(f"  ✅ Saved to '{topic_name}'{keyword_info}: {mention.get('title', 'Uden titel')[:40]}")
+                # Add to existing_urls to prevent duplicates within same batch
+                existing_urls.add(link)
 
             except Exception as mention_error:
-                logger.error(f"  ❌ Failed to save mention: {mention_error}")
+                logger.error(f"  ❌ Failed to prepare mention: {mention_error}")
                 continue
+
+        # OPTIMIZATION 3: Batch insert all new mentions (1 query instead of N)
+        if mentions_to_insert:
+            try:
+                batch_data = [m[0] for m in mentions_to_insert]
+                supabase.table("mentions").insert(batch_data).execute()
+                saved_count = len(mentions_to_insert)
+
+                # Update counts for logging
+                for _, assigned_topic_id, matched_keyword in mentions_to_insert:
+                    topic_counts[assigned_topic_id] = topic_counts.get(assigned_topic_id, 0) + 1
+                    if matched_keyword:
+                        keyword_counts[matched_keyword] = keyword_counts.get(matched_keyword, 0) + 1
+
+                logger.info(f"✅ Batch inserted {saved_count} mentions in single query")
+
+            except Exception as batch_error:
+                logger.error(f"❌ Batch insert failed: {batch_error}")
+                # Fallback to individual inserts if batch fails
+                logger.info("⚠️ Falling back to individual inserts...")
+                for mention_data, assigned_topic_id, matched_keyword in mentions_to_insert:
+                    try:
+                        supabase.table("mentions").insert(mention_data).execute()
+                        saved_count += 1
+                        topic_counts[assigned_topic_id] = topic_counts.get(assigned_topic_id, 0) + 1
+                        if matched_keyword:
+                            keyword_counts[matched_keyword] = keyword_counts.get(matched_keyword, 0) + 1
+                    except Exception as e:
+                        logger.error(f"  ❌ Individual insert failed: {e}")
 
         # CRITICAL: Update last_scraped_at timestamp to prevent constant scraping
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -330,6 +372,9 @@ async def main():
         # Initialize Supabase admin client (bypasses RLS)
         supabase = get_supabase_admin()
         logger.info("✅ Connected to Supabase")
+
+        # OPTIMIZATION: Pre-load platform cache for fast lookups
+        await load_platform_cache(supabase)
 
         # Fetch all active brands with their scrape frequency and last scrape time
         brands_result = supabase.table("brands")\
