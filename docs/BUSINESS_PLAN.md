@@ -53,8 +53,8 @@ Omkostningsmodellen domineres af scraping‑APIer og AI‑inference (DeepSeek/Ta
   - Admin‑API til source configs + AI‑analyse af URL (selectors + search pattern). (`trackanything-admin/app/api/endpoints/admin_sources.py`, `trackanything-admin/app/services/source_configuration/service.py`, `trackanything-app/src/app/[locale]/dashboard/admin/sources/page.tsx`)
 
 ### 2.3 Det, der fremgår i dokumenter men ikke er fuldt implementeret
-- **Politiken/DR specifikke scrapers** er nævnt i docs, men der findes ikke provider‑kode specifikt til Politiken/DR; i stedet bruges configurable sources + RSS. **Not implemented (docs only)**. (`trackanything-admin/README.md`, `trackanything-admin/app/services/scraping/providers/configurable.py`, `trackanything-admin/app/services/scraping/providers/rss.py`)
-- **Automatisk, planlagt scraping** er beskrevet i SCRAPING_LOGIC docs, men der er ingen scheduler i backend. **Not implemented (docs only)**. (`trackanything-admin/SCRAPING_LOGIC.md`, `trackanything-app/SCRAPING_LOGIC.md`)
+- **Politiken/DR specifikke scrapers** er nævnt i docs, men der findes ikke provider‑kode specifikt til Politiken/DR; i stedet bruges configurable sources + RSS. [DOCS-ONLY] (`trackanything-admin/README.md`, `trackanything-admin/app/services/scraping/providers/configurable.py`, `trackanything-admin/app/services/scraping/providers/rss.py`)
+- **Automatisk, planlagt scraping** er beskrevet i SCRAPING_LOGIC docs, men der er ingen scheduler i backend. [DOCS-ONLY] (`trackanything-admin/SCRAPING_LOGIC.md`, `trackanything-app/SCRAPING_LOGIC.md`)
 
 ---
 
@@ -83,12 +83,12 @@ Omkostningsmodellen domineres af scraping‑APIer og AI‑inference (DeepSeek/Ta
 
 ## 5. Konkurrentlandskab (Infomedia som baseline)
 
-**Note:** Konkurrentmapping er baseret på generel markedserfaring, ikke på repo‑evidens. **Assumption**.
+**Note:** Konkurrentmapping er baseret på generel markedserfaring, ikke på repo‑evidens. [ANTAGELSE]
 
 ### Must‑have parity items (min. V1)
 - Web/news monitoring med pålidelig dedupe og historik.
 - Filtrering på brand/topic/keyword/platform og eksportable rapporter.
-- Notifikationer/alerts (minimum via webhook/email). **Ikke implementeret i UI endnu**.
+- Notifikationer/alerts (minimum via webhook/email). [MANGLER]
 
 ### Differentieringspunkter vi kan vinde på
 - **Pris og enkelhed**: hurtig opsætning og lavere total cost.
@@ -97,7 +97,7 @@ Omkostningsmodellen domineres af scraping‑APIer og AI‑inference (DeepSeek/Ta
 
 ### Ting vi bør undgå tidligt
 - Fuldt print/TV/radio‑paritet.
-- Tunge enterprise‑workflows (kompleks approvals, SSO/SAML, on‑prem). **Not implemented**.
+- Tunge enterprise‑workflows (kompleks approvals, SSO/SAML, on‑prem). [MANGLER]
 - Store dashboards med BI‑niveau KPI’er før vi har stabil data‑kvalitet.
 
 ---
@@ -117,12 +117,12 @@ Omkostningsmodellen domineres af scraping‑APIer og AI‑inference (DeepSeek/Ta
 
 ### Funktionelt scope
 1. **Stabil scraping + dataflow**
-   - Automatiseret scraping pr brand baseret på `scrape_frequency_hours` og `last_scraped_at`. (**Not implemented i dag**; felter findes.) (`trackanything-admin/migrations/add_scrape_frequency.sql`, `trackanything-admin/migrations/006_add_brands_is_active.sql`)
+   - Automatiseret scraping pr brand baseret på `scrape_frequency_hours` og `last_scraped_at`. [MANGLER] (felter findes i DB). (`trackanything-admin/migrations/add_scrape_frequency.sql`, `trackanything-admin/migrations/006_add_brands_is_active.sql`)
    - Kilde‑mix: GNews + SerpAPI + RSS + konfigurerbare kilder med selector‑configs. (`trackanything-admin/app/services/scraping/providers/*.py`)
 
 2. **Brand/topic/keyword CRUD fuldt i UI**
    - Opret, rediger, deaktiver, slet både topics og keywords (kun delvist i UI i dag). (`trackanything-app/src/components/brands/brands-topics-list.tsx`, `trackanything-admin/app/api/endpoints/topics_supabase.py`, `keywords_supabase.py`)
-   - UI for `query_template`. (**Not implemented i UI**) (`trackanything-admin/app/schemas/topic.py`, `trackanything-admin/app/api/endpoints/scraping_supabase.py`)
+   - UI for `query_template`. [MANGLER] (`trackanything-admin/app/schemas/topic.py`, `trackanything-admin/app/api/endpoints/scraping_supabase.py`)
 
 3. **Mentions workflow**
    - Filtrering, read/unread, keyword‑matches og batch‑performance. (`trackanything-app/src/components/mentions/mentions-feed.tsx`, `trackanything-admin/app/crud/supabase_crud.py`)
@@ -137,39 +137,50 @@ Omkostningsmodellen domineres af scraping‑APIer og AI‑inference (DeepSeek/Ta
 - **Sikkerhed**: Supabase RLS aktiveret på centrale tabeller; admin‑rolle check. (`trackanything-admin/migrations/*.sql`, `trackanything-admin/app/security/auth.py`)
 - **Stabilitet/Uptime**: Backend opsættes som container (Dockerfile) og frontend på Vercel. (`trackanything-admin/Dockerfile`, `trackanything-app/vercel.json`)
 - **Logging/observability**: Standard logging i backend, især scraping/AI. (`trackanything-admin/app/main.py`, `trackanything-admin/app/api/endpoints/scraping_supabase.py`)
-- **GDPR‑readiness**: Dataminimering, sletteflow for reports/mentions, databehandleraftaler og EU‑hosting (Assumption; mangler eksplicit i kode).
-- **Billing readiness**: Simple plan‑limiters og usage‑målinger; ingen integration i kode endnu. **Not implemented**.
+- **GDPR‑readiness**: Dataminimering, sletteflow for reports/mentions, databehandleraftaler og EU‑hosting. [ANTAGELSE] (mangler eksplicit i kode).
+- **Billing readiness**: Simple plan‑limiters og usage‑målinger; ingen integration i kode endnu. [MANGLER]
 
-### QA checklist & acceptance criteria
-- Scraping kører automatisk pr brand uden manuel trigger og respekterer frekvensgrænser.
-- Mentions kan filtreres på brand/topic/keyword/platform, og read/unread persist. (`trackanything-admin/app/api/endpoints/mentions_supabase.py`)
+### V1 DoD – målbare kriterier
+1. **Scheduler kører autonomt**: Scraping kører uden manuel trigger og scraper aktive brands efter `scrape_frequency_hours` med jitter (±10 min) for load‑spredning. [MANGLER]
+2. **95% scraping‑succes**: Mindst 95% af scraping‑jobs fuldføres uden exception; failures logges med job‑id og brand‑id. (`trackanything-admin/app/services/scraping/orchestrator.py`)
+3. **Mentions‑performance**: Mentions feed kan pagineres (≥50 pr side) og loader under 2 sek ved 10.000 mentions i DB. (`trackanything-admin/app/api/endpoints/mentions_supabase.py`)
+4. **Plan limits server‑side**: Brands/topics/keywords‑caps og scrapes/dag og mentions‑cap håndhæves server‑side (ikke kun UI). [MANGLER]
+5. **GDPR‑minimum**: "Slet konto + eksportér data" fungerer for brugere. [MANGLER]
+
+### QA checklist
+- Mentions kan filtreres på brand/topic/keyword/platform, og read/unread persisterer. (`trackanything-admin/app/api/endpoints/mentions_supabase.py`)
 - Atlas kan generere og gemme rapporter via chat. (`trackanything-admin/app/services/ai/tools/reporting.py`)
 - Admin kan tilføje og refresh source configs, og kilder bruges i scraping. (`trackanything-admin/app/services/source_configuration/service.py`, `trackanything-admin/app/services/scraping/providers/configurable.py`)
-- Grundlæggende performance: batch inserts, dedupe og pagination fungerer. (`trackanything-admin/app/crud/supabase_crud.py`)
+- Batch inserts, dedupe og pagination fungerer korrekt. (`trackanything-admin/app/crud/supabase_crud.py`)
 
 ---
 
 ## 8. Produkt-roadmap (V1 → V1.5 → V2)
 
 ### V1 (0–4 mdr.) – “Stabil kerne + AI‑rapporter”
-- Implementér scheduler til scraping pr brand (baggrundsjob/cron). **Not implemented i dag**.
+- Implementér scheduler til scraping pr brand (baggrundsjob/cron). [MANGLER]
 - Fuld CRUD i UI for topics/keywords + query_template UI.
-- Forbedret alert/digest (mindst webhook) med UI for integration_configs. **Partially implemented** (backend service findes). (`trackanything-admin/app/services/digest_service_supabase.py`)
+- Forbedret alert/digest (mindst webhook) med UI for integration_configs. [DELVIST] (backend service findes). (`trackanything-admin/app/services/digest_service_supabase.py`)
 
 ### V1.5 (4–8 mdr.) – “Kvalitet & vækst”
-- Forbedrede analytics (trends, sentiment – **ikke implementeret**).
+- Forbedrede analytics (trends, sentiment). [MANGLER]
 - Brugerstyring (invites/seats) og team‑arbejde.
 - Kildelibrary + templates (standardiserede danske medier via source_configs).
 
 ### V2 (8–18 mdr.) – “Enterprise light”
 - Avancerede alerts, SLA, længere historik, API‑adgang.
-- (Hvis strategisk) udvidelse til print/TV/radio via partnerskaber. **Assumption**.
+- (Hvis strategisk) udvidelse til print/TV/radio via partnerskaber. [ANTAGELSE]
 
 ---
 
 ## 9. Pris- og pakke-strategi (DKK, tiers, add-ons)
 
-**Antagelser:** Fokus på SMV/startups/bureauer. Ikke public sector først. Web/news/RSS i V1, ingen fuld print/TV/radio‑paritet.
+**Antagelser:** Fokus på SMV/startups/bureauer. Ikke public sector først. Web/news/RSS i V1, ingen fuld print/TV/radio‑paritet. [ANTAGELSE]
+
+### Value metric og cost drivers
+- **Value metric (primær):** Mentions pr. måned + antal brands. Seats er sekundær limiter.
+- **Cost drivers (primær):** Provider‑searches (GNews, SerpAPI) + sekundært storage/egress. AI‑inference (DeepSeek) er næsten neglicerbart (se §9A).
+- **Vigtigste plan‑limiter:** Mentions cap – det er det element der styrer både kundeværdi og variable cost. Når cap nås, stoppes scraping for den pågældende brand/plan.
 
 ### Tiers (eksempel, ekskl. moms)
 1. **Starter – 299 DKK/md**
@@ -227,11 +238,19 @@ Omkostningsmodellen domineres af scraping‑APIer og AI‑inference (DeepSeek/Ta
 - **Supabase Free** har inkluderede kvoter (bl.a. 500 MB database storage, 50K auth MAU). **Supabase Pro** starter ved $25/måned base og har større inkluderede kvoter (bl.a. 8 GB database storage) med overage‑betaling ved overforbrug. Præcise kvoter og overage‑priser bør verificeres på Supabase pricing‑side.
 - **Cost drivers**: DB‑storage for mentions + reports, egress, og RLS overhead ved større volumen.
 
-**Rough monthly baseline (antagelser)**
-- **Today**: Railway ≤$5 + Vercel Hobby $0 + Supabase Free $0 = **~$0–5 / ~0–34 DKK** (1 USD ≈ 6,8 DKK).
-- **V1 (moderat)**: Railway ~$5 + Vercel Pro (per seat, ~$20/seat) + Supabase Pro ($25 base + overage) = **~$50–75 / ~340–510 DKK**.
+**Hosting‑scenarier (V1)**
 
-> **Bemærk:** Alle tre platforme har usage‑baserede komponenter. Ovenstående er baseline‑estimater; faktisk cost afhænger af trafik, storage og antal seats. Planvalg og priser er ikke i repo og skal verificeres på leverandørernes pricing‑sider før lancering.
+| | Scenario A (billigst) | Scenario B (komfort) |
+|---|---|---|
+| **Backend** | Railway Hobby ($5 inkl.) | Railway Hobby ($5 inkl.) |
+| **Frontend** | Vercel Hobby ($0) | Vercel Pro (~$20/seat) |
+| **Database** | Supabase Pro ($25 base) | Supabase Pro ($25 base) |
+| **Estimeret total** | **~$30 / ~204 DKK** | **~$50–75 / ~340–510 DKK** |
+
+- **Scenario A** er tilstrækkeligt til launch og early traction (lav trafik, 1 developer seat).
+- **Scenario B** giver komfort (mere bandwidth, team seats, preview deploys) og vælges når trafikken kræver det.
+
+> **Bemærk:** Alle tre platforme har usage‑baserede komponenter. Faktisk cost afhænger af trafik, storage og antal seats. Planvalg og priser er ikke i repo og skal verificeres på leverandørernes pricing‑sider før lancering.
 
 ### B) Variable costs & unit economics
 **AI‑providers i kode**
@@ -316,23 +335,32 @@ Variable cost pr måned ≈
 8. **Batching af keywords** (allerede delvist via OR‑queries i GNews/SerpAPI). (`gnews.py`, `serpapi.py`)
 
 ### D) Break‑even table (simple)
+
+**Nøglerelation: brand‑scrapes → mentions**
+Provider‑priser afregnes pr. query/brand‑scrape, men value og AI‑cost afregnes pr. mention. Forholdet er:
+- **1 brand‑scrape → ~5–30 mentions** (afhængig af niche og keyword‑specificitet). [ANTAGELSE]
+- Konservativt estimat: **1 brand‑scrape → 10 mentions** bruges i beregningen nedenfor.
+
 **Antagelser (med‑scenario)**
 - 1 USD ≈ 6,8 DKK
 - AI cost (DeepSeek, officielle priser): ~0,6 DKK pr. 1.000 mentions (relevansfilter) + ~0,02 DKK pr. rapport
-- Scraping‑provider cost: antagelse ~5–15 DKK pr. 1.000 brand‑scrapes (GNews + SerpAPI; **skal verificeres**)
-- Samlet variable cost antagelse: **~8 DKK pr. 1.000 mentions** (AI + provider, medium scenarie)
+- Scraping‑provider cost: [ANTAGELSE] ~5–15 DKK pr. 1.000 brand‑scrapes (GNews + SerpAPI; **skal verificeres**)
+- Ved 10 mentions/scrape svarer ~5–15 DKK pr. 1.000 scrapes til ~0,5–1,5 DKK pr. 1.000 mentions (provider) + ~0,6 DKK pr. 1.000 mentions (AI)
+- Samlet variable cost antagelse: **~2–3 DKK pr. 1.000 mentions** (AI + provider, ved 10 mentions/scrape)
 - Rapport cost: **~0,05 DKK pr. rapport** (neglicerbar)
 - Avg usage per customer: **5.000 mentions + 4 rapporter pr. måned**
 - Avg price (ARPA): **799 DKK pr. måned**
-- Fast hosting (V1): ~340 DKK/md
+- Fast hosting (V1, Scenario A): ~204 DKK/md
 
-| Kunder | Mentions/md | Rapporter/md | Omsætning (DKK) | Variable cost (DKK) | Fast cost (DKK) | Bruttomargin |
+| Kunder | Mentions/md | Scrapes/md (÷10) | Omsætning (DKK) | Variable cost (DKK) | Fast cost (DKK) | Bruttomargin |
 |---:|---:|---:|---:|---:|---:|---:|
-| 10 | 50.000 | 40 | 7.990 | ~400 | 340 | **~91%** |
-| 50 | 250.000 | 200 | 39.950 | ~2.000 | 510 | **~94%** |
-| 200 | 1.000.000 | 800 | 159.800 | ~8.000 | 700 | **~95%** |
+| 10 | 50.000 | 5.000 | 7.990 | ~125 | 204 | **~96%** |
+| 50 | 250.000 | 25.000 | 39.950 | ~625 | 340 | **~98%** |
+| 200 | 1.000.000 | 100.000 | 159.800 | ~2.500 | 510 | **~98%** |
 
-> **OBS:** Marginen er høj primært pga. lave DeepSeek‑priser og gratis kilder (RSS, configurable). Hvis GNews/SerpAPI priser ligger i den høje ende af intervallet, kan variable costs stige 2–3x. **Provider‑priser skal verificeres inden skalering.** Tabellen ekskluderer løn, marketing og andre driftsomkostninger.
+> **OBS 1:** Marginen er høj primært pga. lave DeepSeek‑priser og gratis kilder (RSS, configurable). Hvis mention‑density er lavere (fx 5 mentions/scrape i stedet for 10), fordobles provider‑cost‑andelen.
+> **OBS 2:** Hvis GNews/SerpAPI priser ligger i den høje ende af intervallet, kan variable costs stige 2–3x. **Provider‑priser skal verificeres inden skalering.**
+> **OBS 3:** Tabellen ekskluderer løn, marketing og andre driftsomkostninger. Den viser kun infrastruktur‑margin.
 
 ---
 
@@ -357,10 +385,15 @@ Variable cost pr måned ≈
 
 ## 11. Drift, compliance og risiko (GDPR, datasikkerhed, legal)
 
-- **GDPR**: data består primært af offentlige mentions + brugernes egne profiler. Kræver databehandleraftaler, sletteflows og klart formål. **Assumption** (ikke udtrykt i kode).
+- **GDPR**: data består primært af offentlige mentions + brugernes egne profiler. Kræver databehandleraftaler, sletteflows og klart formål. [ANTAGELSE] (ikke udtrykt i kode).
 - **Datasikkerhed**: Supabase RLS er aktivt på centrale tabeller (migrations). (`trackanything-admin/migrations/*.sql`)
 - **Auth**: Supabase JWT i produktion; dev‑auth i debug. (`trackanything-admin/app/security/auth.py`)
 - **Risiko**: Scraping‑kilder kan blokere eller ændre HTML; configurable sources reducerer risiko men kræver vedligehold. (`trackanything-admin/app/services/source_configuration/service.py`)
+
+### Konkrete mitigations (V1‑krav)
+1. **Kun metadata**: Gem kun titel, teaser, URL, tidspunkt og kilde – ingen fuldtekst‑kopiering. (Allerede implicit i kode: `content_teaser` er max 600 chars.) (`trackanything-admin/app/services/scraping/analyzers/relevance_filter.py:43`, `trackanything-admin/app/api/endpoints/scraping_supabase.py:234`)
+2. **Respektér `robots.txt`** for configurable sources – eller dokumentér policy eksplicit. [MANGLER] (`trackanything-admin/app/services/scraping/providers/configurable.py`)
+3. **Source kill‑switch**: Admin skal kunne disable en kilde globalt med ét klik (allerede delvist understøttet via `is_active` på source configs). [DELVIST] (`trackanything-admin/app/api/endpoints/admin_sources.py`)
 
 ---
 
@@ -387,16 +420,22 @@ Variable cost pr måned ≈
 - Admin user management. (`trackanything-admin/app/api/endpoints/admin_supabase.py`, `trackanything-app/src/app/[locale]/dashboard/admin/users/page.tsx`)
 - Admin source configuration + AI selector analysis. (`trackanything-admin/app/api/endpoints/admin_sources.py`, `trackanything-admin/app/services/source_configuration/service.py`, `trackanything-app/src/app/[locale]/dashboard/admin/sources/page.tsx`)
 
-**Delvist implementeret (backend findes, UI mangler eller flow ufuldstændigt)**
-- `query_template` pr topic (backend + scraping, UI mangler). (`trackanything-admin/app/schemas/topic.py`, `trackanything-admin/app/api/endpoints/scraping_supabase.py`)
-- Digest/webhook integration (service + endpoint; ingen UI til config). (`trackanything-admin/app/services/digest_service_supabase.py`, `trackanything-admin/app/api/endpoints/digests_supabase.py`)
-- Profile/settings UI uden backend‑binding. (`trackanything-app/src/app/[locale]/dashboard/settings/page.tsx`, `trackanything-app/src/app/[locale]/dashboard/profile/page.tsx`)
+**[DELVIST] (backend findes, UI mangler eller flow ufuldstændigt)**
+- `query_template` pr topic (backend + scraping, UI mangler). [DELVIST] (`trackanything-admin/app/schemas/topic.py`, `trackanything-admin/app/api/endpoints/scraping_supabase.py`)
+- Digest/webhook integration (service + endpoint; ingen UI til config). [DELVIST] (`trackanything-admin/app/services/digest_service_supabase.py`, `trackanything-admin/app/api/endpoints/digests_supabase.py`)
+- Profile/settings UI uden backend‑binding. [DELVIST] (`trackanything-app/src/app/[locale]/dashboard/settings/page.tsx`, `trackanything-app/src/app/[locale]/dashboard/profile/page.tsx`)
 
-**Mangler men vigtige for V1**
-- Scheduler/cron der respekterer `scrape_frequency_hours` og `last_scraped_at`. **Not implemented**. (`trackanything-admin/migrations/add_scrape_frequency.sql`, `trackanything-admin/migrations/006_add_brands_is_active.sql`)
-- UI for topic/keyword redigering, sletning og query_template. **Not implemented**.
-- Alerts/notifications (email/webhook) i UI og plan‑limits. **Not implemented**.
-- Plan‑/billing‑styring og usage tracking. **Not implemented**.
+**[MANGLER] (vigtige for V1)**
+- Scheduler/cron der respekterer `scrape_frequency_hours` og `last_scraped_at`. [MANGLER] (`trackanything-admin/migrations/add_scrape_frequency.sql`, `trackanything-admin/migrations/006_add_brands_is_active.sql`)
+- UI for topic/keyword redigering, sletning og query_template. [MANGLER]
+- Alerts/notifications (email/webhook) i UI og plan‑limits. [MANGLER]
+- Plan‑/billing‑styring og usage tracking. [MANGLER]
+
+### System boundaries (hvad TrackAnything IKKE er i V1)
+- **Ikke social media monitoring** – ingen integration med Facebook, X/Twitter, Instagram, LinkedIn eller TikTok. Kun web/news/RSS.
+- **Ikke paywall scraping** – systemet gemmer metadata og teasers fra offentligt tilgængelige kilder; ingen paywall‑omgåelse.
+- **Ikke komplet arkiv** – historik er tier‑begrænset (30 dage → 24 mdr). Ikke en erstatning for Infomedia‑arkiv eller compliance‑arkivering.
+- **Ikke enterprise procurement** – ingen SSO/SAML, on‑prem, SLA‑kontrakter eller dedicated infrastructure i V1.
 
 ### Repo evidence (udvalg)
 - API router og endpoints: `trackanything-admin/app/api/api_v1.py`
