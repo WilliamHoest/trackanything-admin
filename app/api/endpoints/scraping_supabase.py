@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from typing import List, Dict, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from dateutil import parser as dateparser
 from app.security.auth import get_current_user
 from app.core.config import settings
 from app.core.supabase_db import get_supabase_crud
@@ -128,8 +129,32 @@ async def scrape_brand(
                 errors=["No keywords configured for this brand"]
             )
         
+        # Determine from_date: use last_scraped_at for subsequent scrapes,
+        # initial_lookback_days only for the first scrape
+        last_scraped_at = brand.get("last_scraped_at")
+        from_date = None
+
+        if last_scraped_at:
+            # Subsequent scrape: only fetch articles since last scrape
+            if isinstance(last_scraped_at, str):
+                from_date = dateparser.parse(last_scraped_at)
+            else:
+                from_date = last_scraped_at
+            if from_date and from_date.tzinfo is None:
+                from_date = from_date.replace(tzinfo=timezone.utc)
+            scraping_logger.info(f"Subsequent scrape — looking back to last_scraped_at: {from_date}")
+        else:
+            # First scrape: use initial_lookback_days
+            lookback_days = brand.get("initial_lookback_days", 1) or 1
+            from_date = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+            scraping_logger.info(f"First scrape — looking back {lookback_days} day(s) to {from_date}")
+
         # Fetch mentions using the improved search queries with AI relevance filtering
-        mentions = await fetch_and_filter_mentions(query_list, apply_relevance_filter=True)
+        mentions = await fetch_and_filter_mentions(
+            query_list,
+            apply_relevance_filter=True,
+            from_date=from_date
+        )
 
         if not mentions:
             return BrandScrapeResponse(

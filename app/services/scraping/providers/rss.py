@@ -1,9 +1,9 @@
 import feedparser
 import asyncio
-from typing import List, Dict
+from typing import List, Dict, Optional
 from datetime import datetime, timezone, timedelta
 
-async def scrape_rss(keywords: List[str]) -> List[Dict]:
+async def scrape_rss(keywords: List[str], from_date: Optional[datetime] = None) -> List[Dict]:
     """
     Scraper RSS feeds via Google News RSS endpoint.
 
@@ -11,6 +11,10 @@ async def scrape_rss(keywords: List[str]) -> List[Dict]:
     Normalt abonnerer man på et feed URL.
     Her laver vi en Google News RSS søgning som fallback/gratis alternativ.
     Dette giver os data uden API key limits (dog med rate limits).
+    
+    Args:
+        keywords: List of keywords to search for
+        from_date: Optional datetime to filter articles from. Defaults to 24 hours ago.
     """
     if not keywords:
         print("⚠️ No keywords provided for RSS scraping")
@@ -22,8 +26,8 @@ async def scrape_rss(keywords: List[str]) -> List[Dict]:
     # Det giver os data uden API key limits (dog med rate limits)
     base_url = "https://news.google.com/rss/search?q={}&hl=da&gl=DK&ceid=DK:da"
 
-    # Limit for at undgå for mange requests
-    since = datetime.now(timezone.utc) - timedelta(hours=24)
+    # Use provided from_date or default to 24 hours ago
+    since = from_date if from_date else datetime.now(timezone.utc) - timedelta(hours=24)
 
     print(f"🔍 RSS: Scraping {len(keywords)} keyword(s) via Google News RSS...")
 
@@ -39,14 +43,15 @@ async def scrape_rss(keywords: List[str]) -> List[Dict]:
 
             for entry in feed.entries:
                 try:
-                    # Parse published date
+                    # Parse published date - skip articles without parsable date
                     published_parsed = entry.get("published_parsed")
-                    if published_parsed:
-                        published_dt = datetime(*published_parsed[:6], tzinfo=timezone.utc)
+                    if not published_parsed:
+                        continue
+                    published_dt = datetime(*published_parsed[:6], tzinfo=timezone.utc)
 
-                        # Skip old articles
-                        if published_dt < since:
-                            continue
+                    # Skip old articles
+                    if published_dt < since:
+                        continue
 
                     # Extract link (Google News RSS wraps the real link)
                     link = entry.get("link", "")

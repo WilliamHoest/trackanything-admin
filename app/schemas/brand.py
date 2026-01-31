@@ -10,12 +10,14 @@ class BrandBase(BaseModel):
 class BrandCreate(BrandBase):
     scrape_frequency_hours: Optional[int] = 24
     is_active: Optional[bool] = True
+    initial_lookback_days: Optional[int] = 1
 
 class BrandUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     scrape_frequency_hours: Optional[int] = None
     is_active: Optional[bool] = None
+    initial_lookback_days: Optional[int] = None
 
 class BrandResponse(BrandBase):
     id: int
@@ -23,6 +25,7 @@ class BrandResponse(BrandBase):
     description: Optional[str] = None
     scrape_frequency_hours: int
     is_active: bool
+    initial_lookback_days: int = 1
     last_scraped_at: Optional[datetime] = None
     created_at: datetime
 

@@ -1,5 +1,6 @@
 import asyncio
 from typing import List, Dict
+from datetime import datetime, timedelta, timezone
 
 from app.services.scraping.providers.gnews import scrape_gnews
 from app.services.scraping.providers.serpapi import scrape_serpapi
@@ -8,7 +9,7 @@ from app.services.scraping.providers.rss import scrape_rss
 from app.services.scraping.core.text_processing import normalize_url, get_platform_from_url
 from app.services.scraping.analyzers.relevance_filter import relevance_filter
 
-async def fetch_all_mentions(keywords: List[str]) -> List[Dict]:
+async def fetch_all_mentions(keywords: List[str], lookback_days: int = 1, from_date: datetime = None) -> List[Dict]:
     """
     Fetch mentions from all sources in parallel using asyncio.gather.
 
@@ -16,21 +17,31 @@ async def fetch_all_mentions(keywords: List[str]) -> List[Dict]:
     - All 4 sources scrape simultaneously (much faster)
     - One failed source doesn't crash the entire batch
     - Returns deduplicated results based on normalized URLs
+
+    Args:
+        keywords: List of keywords to search for
+        lookback_days: Number of days to look back for mentions (default: 1). Ignored if from_date is set.
+        from_date: Explicit datetime cutoff. If set, lookback_days is ignored.
     """
     if not keywords:
         print("⚠️ No keywords provided for scraping")
         return []
 
+    # Use explicit from_date if provided, otherwise calculate from lookback_days
+    if from_date is None:
+        from_date = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+
     print(f"🚀 Starting parallel scraping with {len(keywords)} keywords")
     print(f"📝 Keywords: {keywords}")
+    print(f"📅 Fetching articles from {from_date.isoformat()}")
 
-    # Run all scrapers in parallel
+    # Run all scrapers in parallel with from_date
     # return_exceptions=True ensures one failure doesn't crash others
     results = await asyncio.gather(
-        scrape_gnews(keywords),
-        scrape_serpapi(keywords),
-        scrape_configurable_sources(keywords),
-        scrape_rss(keywords),
+        scrape_gnews(keywords, from_date=from_date),
+        scrape_serpapi(keywords, from_date=from_date),
+        scrape_configurable_sources(keywords, from_date=from_date),
+        scrape_rss(keywords, from_date=from_date),
         return_exceptions=True
     )
 
@@ -74,7 +85,9 @@ async def fetch_all_mentions(keywords: List[str]) -> List[Dict]:
 
 async def fetch_and_filter_mentions(
     keywords: List[str],
-    apply_relevance_filter: bool = True
+    apply_relevance_filter: bool = True,
+    lookback_days: int = 1,
+    from_date: datetime = None
 ) -> List[Dict]:
     """
     Fetch mentions from all sources and optionally filter by AI relevance.
@@ -84,12 +97,14 @@ async def fetch_and_filter_mentions(
     Args:
         keywords: List of keywords to search for
         apply_relevance_filter: Whether to run AI relevance filter (default: True)
+        lookback_days: Number of days to look back for mentions (default: 1). Ignored if from_date is set.
+        from_date: Explicit datetime cutoff. If set, lookback_days is ignored.
 
     Returns:
         List of relevant mentions (deduplicated)
     """
-    # Step 1: Fetch all mentions from sources
-    mentions = await fetch_all_mentions(keywords)
+    # Step 1: Fetch all mentions from sources with lookback
+    mentions = await fetch_all_mentions(keywords, lookback_days=lookback_days, from_date=from_date)
 
     if not mentions:
         return []

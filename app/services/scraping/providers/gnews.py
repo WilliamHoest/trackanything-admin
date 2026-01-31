@@ -1,4 +1,4 @@
-from typing import List, Dict
+from typing import List, Dict, Optional
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote_plus
 from dateutil import parser as dateparser
@@ -12,10 +12,14 @@ from app.services.scraping.core.http_client import (
 )
 from app.services.scraping.core.text_processing import clean_keywords
 
-async def scrape_gnews(keywords: List[str]) -> List[Dict]:
+async def scrape_gnews(keywords: List[str], from_date: Optional[datetime] = None) -> List[Dict]:
     """
     Fetch articles from GNews API.
     Uses async httpx with retry logic.
+    
+    Args:
+        keywords: List of keywords to search for
+        from_date: Optional datetime to filter articles from. Defaults to 24 hours ago.
     """
     if not keywords or not settings.gnews_api_key:
         if not settings.gnews_api_key:
@@ -35,7 +39,8 @@ async def scrape_gnews(keywords: List[str]) -> List[Dict]:
 
             articles_data = data.get("articles", [])
             entries = []
-            since = datetime.now(timezone.utc) - timedelta(hours=24)
+            # Use provided from_date or default to 24 hours ago
+            since = from_date if from_date else datetime.now(timezone.utc) - timedelta(hours=24)
 
             for article in articles_data:
                 if "url" not in article:
@@ -43,7 +48,14 @@ async def scrape_gnews(keywords: List[str]) -> List[Dict]:
 
                 try:
                     published_at = article.get("publishedAt")
-                    parsed = dateparser.parse(published_at) if published_at else datetime.now(timezone.utc)
+                    if not published_at:
+                        continue
+                    try:
+                        parsed = dateparser.parse(published_at)
+                    except Exception:
+                        continue
+                    if parsed is None:
+                        continue
 
                     # Ensure UTC-aware
                     if parsed.tzinfo is None:

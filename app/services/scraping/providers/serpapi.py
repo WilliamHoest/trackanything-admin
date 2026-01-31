@@ -1,4 +1,4 @@
-from typing import List, Dict
+from typing import List, Dict, Optional
 from datetime import datetime, timedelta, timezone
 from dateutil import parser as dateparser
 import httpx
@@ -11,10 +11,14 @@ from app.services.scraping.core.http_client import (
 )
 from app.services.scraping.core.text_processing import clean_keywords
 
-async def scrape_serpapi(keywords: List[str]) -> List[Dict]:
+async def scrape_serpapi(keywords: List[str], from_date: Optional[datetime] = None) -> List[Dict]:
     """
     Fetch articles from SerpAPI (Google News).
     Uses async httpx with retry logic.
+    
+    Args:
+        keywords: List of keywords to search for
+        from_date: Optional datetime to filter articles from. Defaults to 24 hours ago.
     """
     if not keywords or not settings.serpapi_key:
         if not settings.serpapi_key:
@@ -40,7 +44,8 @@ async def scrape_serpapi(keywords: List[str]) -> List[Dict]:
             data = response.json()
 
             entries = []
-            since = datetime.now(timezone.utc) - timedelta(hours=24)
+            # Use provided from_date or default to 24 hours ago
+            since = from_date if from_date else datetime.now(timezone.utc) - timedelta(hours=24)
 
             for item in data.get("news_results", []):
                 if "title" not in item or "link" not in item or "date" not in item:

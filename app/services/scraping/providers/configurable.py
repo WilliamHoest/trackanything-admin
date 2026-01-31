@@ -61,7 +61,8 @@ async def _get_config_for_domain(domain: str) -> Optional[Dict]:
 
 async def _scrape_article_content(
     url: str,
-    keywords: List[str]
+    keywords: List[str],
+    from_date: Optional[datetime] = None
 ) -> Optional[Dict]:
     """
     Unified method to scrape article content from any URL.
@@ -145,15 +146,15 @@ async def _scrape_article_content(
             if config and config.get('date_selector'):
                 date_elem = soup.select_one(config['date_selector'])
                 if date_elem:
-                    date_str = date_elem.get('datetime') or date_elem.get_text(strip=True)
-            
+                    date_str = date_elem.get('datetime') or date_elem.get('content') or date_elem.get_text(strip=True)
+
             if not date_str:
                 if config and config.get('date_selector'):
                     print(f"      ⚠️ Configured date selector '{config['date_selector']}' failed or empty. Trying fallbacks.")
-                
+
                 date_elem = try_selectors(soup, GENERIC_DATE_SELECTORS)
                 if date_elem:
-                    date_str = date_elem.get('datetime') or date_elem.get_text(strip=True)
+                    date_str = date_elem.get('datetime') or date_elem.get('content') or date_elem.get_text(strip=True)
 
             # Check for keyword match
             text_to_search = f"{title} {content}"
@@ -172,14 +173,18 @@ async def _scrape_article_content(
                         if parsed_date:
                             if parsed_date.tzinfo is None:
                                 parsed_date = parsed_date.replace(tzinfo=timezone.utc)
+                            else:
+                                parsed_date = parsed_date.astimezone(timezone.utc)
+                            # Filter by from_date if provided
+                            if from_date and parsed_date < from_date:
+                                return None
                             published_parsed = parsed_date.timetuple()
                     except Exception:
                         pass
 
-                # Use current time as fallback
+                # Skip article if date could not be parsed
                 if not published_parsed:
-                    since = datetime.now(timezone.utc) - timedelta(hours=24)
-                    published_parsed = since.timetuple()
+                    return None
 
                 article = {
                     "title": title or "Uden titel",
@@ -202,7 +207,8 @@ async def _scrape_article_content(
 
 async def scrape_configurable_sources(
     keywords: List[str],
-    max_articles_per_source: int = 50
+    max_articles_per_source: int = 50,
+    from_date: Optional[datetime] = None
 ) -> List[Dict]:
     """
     Universal scraper that works with any source configured in database.
@@ -220,6 +226,7 @@ async def scrape_configurable_sources(
     Args:
         keywords: List of search keywords
         max_articles_per_source: Maximum articles to extract per source (default: 50)
+        from_date: Optional datetime to filter articles from. Defaults to 24 hours ago.
 
     Returns:
         List of article dictionaries with title, link, date, platform, content
@@ -309,7 +316,7 @@ async def scrape_configurable_sources(
         """Extract content from a single article URL."""
         async with sem:
             try:
-                return await _scrape_article_content(url, keywords)
+                return await _scrape_article_content(url, keywords, from_date=from_date)
             except Exception as e:
                 print(f"   ⚠️ Extraction failed for {url}: {e}")
                 return None

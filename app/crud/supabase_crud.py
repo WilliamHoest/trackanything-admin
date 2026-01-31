@@ -77,6 +77,7 @@ class SupabaseCRUD:
                 "name": brand.name,
                 "description": brand.description,
                 "scrape_frequency_hours": brand.scrape_frequency_hours,
+                "initial_lookback_days": brand.initial_lookback_days,
                 "profile_id": str(profile_id),
                 "created_at": datetime.utcnow().isoformat()
             }
