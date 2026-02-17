@@ -108,10 +108,20 @@ def keyword_matches_text(patterns: List[re.Pattern], text: str) -> bool:
     return False
 
 def normalize_url(url: str) -> str:
-    """Normalize URL by removing query parameters and fragments"""
+    """Normalize URL by removing query/fragment and canonicalizing host/path."""
     try:
         parsed = urlparse(url)
-        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, '', '', ''))
+        scheme = (parsed.scheme or "https").lower()
+        host = parsed.netloc.lower()
+        if host.startswith("www."):
+            host = host[4:]
+
+        path = parsed.path or "/"
+        path = re.sub(r"/{2,}", "/", path)
+        if path != "/":
+            path = path.rstrip("/")
+
+        return urlunparse((scheme, host, path, '', '', ''))
     except Exception:
         return url
 

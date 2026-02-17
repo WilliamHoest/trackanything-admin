@@ -28,6 +28,8 @@ from app.core.selectors import (
 )
 
 logger = logging.getLogger("scraping")
+for _trafilatura_logger in ("trafilatura", "trafilatura.core", "trafilatura.utils", "trafilatura.xml"):
+    logging.getLogger(_trafilatura_logger).setLevel(logging.CRITICAL)
 
 
 def _log(scrape_run_id: Optional[str], message: str, level: int = logging.INFO) -> None:
@@ -51,6 +53,8 @@ NON_ARTICLE_PATH_SEGMENTS = {
     "om-dr", "om_politiken"
 }
 MIN_MEANINGFUL_CONTENT_CHARS = 80
+MIN_TRAFILATURA_HTML_CHARS = 500
+DEFAULT_MAX_ARTICLES_PER_SOURCE = 20
 DATEPARSER_SETTINGS = {
     "TIMEZONE": "UTC",
     "TO_TIMEZONE": "UTC",
@@ -198,13 +202,16 @@ def _extract_with_selector_list(
     return ("", False) if extractor == _extract_date_from_selector else ""
 
 
-def _extract_with_trafilatura(
+def _extract_with_trafilatura_sync(
     html_content: str,
     scrape_run_id: Optional[str] = None
 ) -> tuple[str, str, str]:
     title = ""
     content = ""
     date_str = ""
+
+    if not html_content or len(html_content) < MIN_TRAFILATURA_HTML_CHARS:
+        return title, content, date_str
 
     try:
         extracted = trafilatura.bare_extraction(html_content)
@@ -230,7 +237,18 @@ def _extract_with_trafilatura(
     return title, content, date_str
 
 
-def _extract_content(
+async def _extract_with_trafilatura(
+    html_content: str,
+    scrape_run_id: Optional[str] = None
+) -> tuple[str, str, str]:
+    return await asyncio.to_thread(
+        _extract_with_trafilatura_sync,
+        html_content,
+        scrape_run_id
+    )
+
+
+async def _extract_content(
     soup: BeautifulSoup,
     html_content: str,
     config: Optional[Dict],
@@ -291,7 +309,10 @@ def _extract_content(
 
     # Attempt 3: Trafilatura safety net for empty/short extractions
     if not _has_meaningful_content(content):
-        tf_title, tf_content, tf_date = _extract_with_trafilatura(html_content, scrape_run_id=scrape_run_id)
+        tf_title, tf_content, tf_date = await _extract_with_trafilatura(
+            html_content,
+            scrape_run_id=scrape_run_id
+        )
 
         if tf_title and not title:
             title = tf_title
@@ -447,7 +468,7 @@ async def _scrape_article_content(
                 raise
 
             soup = BeautifulSoup(response.text, "lxml")
-            title, content, date_str, date_confident, extracted_via = _extract_content(
+            title, content, date_str, date_confident, extracted_via = await _extract_content(
                 soup,
                 response.text,
                 config,
@@ -515,7 +536,7 @@ async def _scrape_article_content(
 
 async def scrape_configurable_sources(
     keywords: List[str],
-    max_articles_per_source: int = 50,
+    max_articles_per_source: int = DEFAULT_MAX_ARTICLES_PER_SOURCE,
     from_date: Optional[datetime] = None,
     scrape_run_id: Optional[str] = None
 ) -> List[Dict]:
@@ -534,7 +555,7 @@ async def scrape_configurable_sources(
 
     Args:
         keywords: List of search keywords
-        max_articles_per_source: Maximum articles to extract per source (default: 50)
+        max_articles_per_source: Maximum articles to extract per source (default: 20)
         from_date: Optional datetime to filter articles from. Defaults to 24 hours ago.
 
     Returns:
