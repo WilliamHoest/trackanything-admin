@@ -230,7 +230,7 @@ async def scrape_brand(
                 if "published_parsed" in mention and mention["published_parsed"]:
                     published_date = datetime(*mention["published_parsed"][:6], tzinfo=timezone.utc)
                 else:
-                    published_date = datetime.now(timezone.utc)
+                    published_date = None
 
                 # Get platform from cache
                 platform = platform_cache.get(mention.get("platform", "Unknown"))
@@ -272,7 +272,7 @@ async def scrape_brand(
                 mention_data = {
                     "caption": mention.get("title", ""),
                     "post_link": mention.get("link", ""),
-                    "published_at": published_date.isoformat(),
+                    "published_at": published_date.isoformat() if published_date else None,
                     "content_teaser": mention.get("content_teaser"),
                     "platform_id": platform["id"],
                     "brand_id": brand_id,

@@ -2,11 +2,12 @@ from typing import List, Dict, Optional, Iterator
 from datetime import datetime, timezone
 from urllib.parse import urlparse, urljoin, quote_plus
 from bs4 import BeautifulSoup
-from dateutil import parser as dateparser
+import dateparser
 import httpx
 import asyncio
 import re
 import logging
+import trafilatura
 
 from app.crud.supabase_crud import SupabaseCRUD
 from app.services.scraping.core.http_client import (
@@ -48,6 +49,14 @@ NON_ARTICLE_PATH_SEGMENTS = {
     "kampagner", "faq", "kontakt", "cookiepolitik", "cookies", "persondata-politik",
     "privatlivspolitik", "tilgaengelighed", "nyhedsbreve", "mine-sider", "drtv",
     "om-dr", "om_politiken"
+}
+MIN_MEANINGFUL_CONTENT_CHARS = 80
+DATEPARSER_SETTINGS = {
+    "TIMEZONE": "UTC",
+    "TO_TIMEZONE": "UTC",
+    "RETURN_AS_TIMEZONE_AWARE": True,
+    "DATE_ORDER": "DMY",
+    "PREFER_DATES_FROM": "past",
 }
 
 
@@ -145,6 +154,185 @@ def _is_confident_date_for_filtering(date_str: str, from_attribute: bool) -> boo
     if from_attribute:
         return True
     return bool(DATE_CERTAINTY_PATTERN.search(date_str))
+
+
+def _clean_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip())
+
+
+def _extract_text_from_selector(soup: BeautifulSoup, selector: Optional[str]) -> str:
+    if not selector:
+        return ""
+    elem = soup.select_one(selector)
+    if not elem:
+        return ""
+    return _clean_text(elem.get_text(" ", strip=True))
+
+
+def _extract_date_from_selector(soup: BeautifulSoup, selector: Optional[str]) -> tuple[str, bool]:
+    if not selector:
+        return "", False
+    elem = soup.select_one(selector)
+    if not elem:
+        return "", False
+    date_value, confident = _extract_date_value(elem)
+    return _clean_text(date_value), confident
+
+
+def _has_meaningful_content(content: str) -> bool:
+    return len(_clean_text(content)) >= MIN_MEANINGFUL_CONTENT_CHARS
+
+
+def _extract_with_selector_list(
+    soup: BeautifulSoup,
+    selectors: List[str],
+    extractor
+):
+    for selector in selectors:
+        value = extractor(soup, selector)
+        if isinstance(value, tuple):
+            if value[0]:
+                return value
+        elif value:
+            return value
+    return ("", False) if extractor == _extract_date_from_selector else ""
+
+
+def _extract_with_trafilatura(
+    html_content: str,
+    scrape_run_id: Optional[str] = None
+) -> tuple[str, str, str]:
+    title = ""
+    content = ""
+    date_str = ""
+
+    try:
+        extracted = trafilatura.bare_extraction(html_content)
+        if isinstance(extracted, dict):
+            title = _clean_text(
+                extracted.get("title", "")
+                or extracted.get("sitename", "")
+            )
+            content = _clean_text(
+                extracted.get("text", "")
+                or extracted.get("raw_text", "")
+            )
+            date_str = _clean_text(
+                extracted.get("date", "")
+                or extracted.get("date_extracted", "")
+            )
+
+        if not content:
+            content = _clean_text(trafilatura.extract(html_content) or "")
+    except Exception as e:
+        _log(scrape_run_id, f"Trafilatura extraction failed: {e}", logging.DEBUG)
+
+    return title, content, date_str
+
+
+def _extract_content(
+    soup: BeautifulSoup,
+    html_content: str,
+    config: Optional[Dict],
+    scrape_run_id: Optional[str] = None
+) -> tuple[str, str, str, bool, str]:
+    title = ""
+    content = ""
+    date_str = ""
+    date_confident = False
+    extracted_via = "none"
+
+    # Attempt 1: SourceConfig selectors
+    if config:
+        title = _extract_text_from_selector(soup, config.get("title_selector"))
+        content = _extract_text_from_selector(soup, config.get("content_selector"))
+        date_str, date_confident = _extract_date_from_selector(soup, config.get("date_selector"))
+
+        if config.get("title_selector") and not title:
+            _log(
+                scrape_run_id,
+                f"Configured title selector '{config['title_selector']}' failed or empty. Trying fallbacks.",
+                logging.DEBUG
+            )
+        if config.get("content_selector") and not content:
+            _log(
+                scrape_run_id,
+                f"Configured content selector '{config['content_selector']}' failed or empty. Trying fallbacks.",
+                logging.DEBUG
+            )
+        if config.get("date_selector") and not date_str:
+            _log(
+                scrape_run_id,
+                f"Configured date selector '{config['date_selector']}' found no date. Trying fallbacks.",
+                logging.DEBUG
+            )
+
+        if _has_meaningful_content(content):
+            extracted_via = "config"
+
+    # Attempt 2: Generic selectors
+    if not _has_meaningful_content(content):
+        if not title:
+            title = _extract_with_selector_list(soup, GENERIC_TITLE_SELECTORS, _extract_text_from_selector)
+
+        generic_content = _extract_with_selector_list(soup, GENERIC_CONTENT_SELECTORS, _extract_text_from_selector)
+        if len(generic_content) > len(content):
+            content = generic_content
+
+        if not date_str:
+            date_str, date_confident = _extract_with_selector_list(
+                soup,
+                GENERIC_DATE_SELECTORS,
+                _extract_date_from_selector
+            )
+
+        if _has_meaningful_content(content):
+            extracted_via = "generic"
+
+    # Attempt 3: Trafilatura safety net for empty/short extractions
+    if not _has_meaningful_content(content):
+        tf_title, tf_content, tf_date = _extract_with_trafilatura(html_content, scrape_run_id=scrape_run_id)
+
+        if tf_title and not title:
+            title = tf_title
+        if len(tf_content) > len(content):
+            content = tf_content
+        if tf_date and not date_str:
+            date_str = tf_date
+            date_confident = bool(DATE_CERTAINTY_PATTERN.search(tf_date))
+
+        if _has_meaningful_content(content):
+            extracted_via = "trafilatura"
+
+    return title, content, date_str, date_confident, extracted_via
+
+
+def _parse_date_value(date_str: str, scrape_run_id: Optional[str] = None) -> Optional[datetime]:
+    normalized = _clean_text(date_str)
+    if not normalized:
+        return None
+
+    # Try both original case and lowercase to handle month names like "MARTS".
+    candidates = [normalized]
+    lower_candidate = normalized.lower()
+    if lower_candidate != normalized:
+        candidates.append(lower_candidate)
+
+    for candidate in candidates:
+        try:
+            parsed = dateparser.parse(
+                candidate,
+                languages=["da", "en"],
+                settings=DATEPARSER_SETTINGS
+            )
+            if parsed:
+                if parsed.tzinfo is None:
+                    return parsed.replace(tzinfo=timezone.utc)
+                return parsed.astimezone(timezone.utc)
+        except Exception as e:
+            _log(scrape_run_id, f"Date parse failed for '{candidate}': {e}", logging.DEBUG)
+
+    return None
 
 
 async def _get_config_for_domain(
@@ -249,75 +437,22 @@ async def _scrape_article_content(
         async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
             from app.services.scraping.core.http_client import get_default_headers
             headers = get_default_headers()
-            response = await fetch_with_retry(client, url, headers=headers)
+
+            try:
+                response = await fetch_with_retry(client, url, headers=headers)
+            except httpx.HTTPStatusError as e:
+                if e.response is not None and e.response.status_code == 402:
+                    _log(scrape_run_id, f"Paywall blocked (402) for {url}", logging.INFO)
+                    return None
+                raise
+
             soup = BeautifulSoup(response.text, "lxml")
-
-            title = ""
-            content = ""
-            date_str = ""
-            date_confident = False
-
-            def try_selectors(soup_obj, selectors):
-                for selector in selectors:
-                    elem = soup_obj.select_one(selector)
-                    if elem:
-                        return elem
-                return None
-
-            # === Title Extraction ===
-            if config and config.get('title_selector'):
-                title_elem = soup.select_one(config['title_selector'])
-                if title_elem:
-                    title = title_elem.get_text(strip=True)
-            
-            if not title:
-                if config and config.get('title_selector'):
-                    _log(
-                        scrape_run_id,
-                        f"Configured title selector '{config['title_selector']}' failed or empty. Trying fallbacks.",
-                        logging.DEBUG
-                    )
-                
-                title_elem = try_selectors(soup, GENERIC_TITLE_SELECTORS)
-                if title_elem:
-                    title = title_elem.get_text(strip=True)
-
-            # === Content Extraction ===
-            if config and config.get('content_selector'):
-                content_elem = soup.select_one(config['content_selector'])
-                if content_elem:
-                    content = content_elem.get_text(strip=True)
-            
-            if not content:
-                if config and config.get('content_selector'):
-                    _log(
-                        scrape_run_id,
-                        f"Configured content selector '{config['content_selector']}' failed or empty. Trying fallbacks.",
-                        logging.DEBUG
-                    )
-                
-                content_elem = try_selectors(soup, GENERIC_CONTENT_SELECTORS)
-                if content_elem:
-                    content = content_elem.get_text(strip=True)
-
-            # === Date Extraction ===
-            if config and config.get('date_selector'):
-                date_elem = soup.select_one(config['date_selector'])
-                if date_elem:
-                    date_str, date_confident = _extract_date_value(date_elem)
-                
-                # If configured selector failed to find date, log warning but continue to generic fallback
-                if not date_str:
-                    _log(
-                        scrape_run_id,
-                        f"Configured date selector '{config['date_selector']}' found no date. Trying fallbacks.",
-                        logging.DEBUG
-                    )
-
-            if not date_str:
-                date_elem = try_selectors(soup, GENERIC_DATE_SELECTORS)
-                if date_elem:
-                    date_str, date_confident = _extract_date_value(date_elem)
+            title, content, date_str, date_confident, extracted_via = _extract_content(
+                soup,
+                response.text,
+                config,
+                scrape_run_id=scrape_run_id
+            )
 
             # Check for keyword match
             text_to_search = f"{title} {content}"
@@ -328,41 +463,28 @@ async def _scrape_article_content(
                 else:
                     platform = get_platform_from_url(url)
 
-                # Parse date if available
+                # Parse date if available (never default to "now" on parse failure)
                 published_parsed = None
                 if date_str:
-                    try:
-                        parsed_date = dateparser.parse(date_str)
-                        if parsed_date:
-                            if parsed_date.tzinfo is None:
-                                parsed_date = parsed_date.replace(tzinfo=timezone.utc)
-                            else:
-                                parsed_date = parsed_date.astimezone(timezone.utc)
-
-                            # Filter by from_date only when we trust the extracted date value.
-                            if from_date_utc and parsed_date < from_date_utc:
-                                if _is_confident_date_for_filtering(date_str, date_confident):
-                                    _log(
-                                        scrape_run_id,
-                                        f"Date too old for {url}: {parsed_date} < {from_date_utc}",
-                                        logging.DEBUG
-                                    )
-                                    return None
+                    parsed_date = _parse_date_value(date_str, scrape_run_id=scrape_run_id)
+                    if parsed_date:
+                        # Filter by from_date only when we trust the extracted date value.
+                        if from_date_utc and parsed_date < from_date_utc:
+                            if _is_confident_date_for_filtering(date_str, date_confident):
                                 _log(
                                     scrape_run_id,
-                                    f"Date looked old but extraction was low confidence for {url}. Keeping article.",
+                                    f"Date too old for {url}: {parsed_date} < {from_date_utc}",
                                     logging.DEBUG
                                 )
-                            published_parsed = parsed_date.timetuple()
-                    except Exception as e:
-                        _log(scrape_run_id, f"Date parse failed for '{date_str}': {e}", logging.DEBUG)
-                        pass
-
-                # If date parsing failed or date was missing, default to NOW
-                # This ensures we don't skip valid articles just because date extraction failed
-                if not published_parsed:
-                    _log(scrape_run_id, f"Date missing or unparseable for {url}. Defaulting to NOW.", logging.DEBUG)
-                    published_parsed = datetime.now(timezone.utc).timetuple()
+                                return None
+                            _log(
+                                scrape_run_id,
+                                f"Date looked old but extraction was low confidence for {url}. Keeping article.",
+                                logging.DEBUG
+                            )
+                        published_parsed = parsed_date.timetuple()
+                    else:
+                        _log(scrape_run_id, f"Date missing or unparseable for {url}. Keeping published_parsed=None.", logging.DEBUG)
 
                 article = {
                     "title": title or "Uden titel",
@@ -373,7 +495,11 @@ async def _scrape_article_content(
                 }
 
                 config_status = "config" if config else "generic"
-                _log(scrape_run_id, f"Match ({platform}, {config_status}): {title}", logging.DEBUG)
+                _log(
+                    scrape_run_id,
+                    f"Match ({platform}, {config_status}, extracted_via={extracted_via}): {title}",
+                    logging.DEBUG
+                )
                 return article
             else:
                 _log(scrape_run_id, f"Keyword match failed for {url}", logging.DEBUG)

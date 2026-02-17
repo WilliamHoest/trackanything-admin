@@ -458,7 +458,7 @@ class SupabaseCRUD:
             data = {
                 "caption": mention_data.get("caption", ""),
                 "post_link": mention_data.get("post_link", ""),
-                "published_at": mention_data.get("published_at", datetime.utcnow().isoformat()),
+                "published_at": mention_data.get("published_at"),
                 "content_teaser": mention_data.get("content_teaser"),
                 "platform_id": mention_data.get("platform_id"),
                 "brand_id": mention_data.get("brand_id"),
@@ -502,7 +502,7 @@ class SupabaseCRUD:
             data_to_save.append({
                 "caption": m.get("caption", m.get("title", "")),
                 "post_link": link,
-                "published_at": m.get("published_at", now),
+                "published_at": m.get("published_at"),
                 "content_teaser": m.get("content_teaser"),
                 "platform_id": m.get("platform_id"),
                 "brand_id": m.get("brand_id"),

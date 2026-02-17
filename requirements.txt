@@ -20,5 +20,7 @@ pydantic-ai==1.38.0
 tavily-python==0.7.17
 tenacity==9.1.2
 fake-useragent==1.5.1
+dateparser
+trafilatura
 openai  # Used for DeepSeek API (OpenAI-compatible)
 google-search-results

@@ -3,8 +3,14 @@ from urllib.parse import urlparse, urlunparse
 from typing import List
 
 def clean_keywords(keywords: List[str]) -> List[str]:
-    """Clean keywords by removing dots and commas"""
-    return [kw.replace(".", "").replace(",", "").strip() for kw in keywords if kw.strip()]
+    """Clean keywords by removing punctuation noise around phrase inputs."""
+    cleaned = []
+    for kw in keywords:
+        candidate = kw.replace(".", "").replace(",", "").strip()
+        candidate = candidate.strip(_QUOTE_CHARS + " ")
+        if candidate:
+            cleaned.append(candidate)
+    return cleaned
 
 _QUOTE_CHARS = "\"'“”„‟«»`´"
 _QUOTED_PHRASE_PATTERN = re.compile(r'["“”„‟«»]([^"“”„‟«»]+)["“”„‟«»]')
@@ -40,12 +46,11 @@ def _extract_keyword_terms(keyword: str) -> List[str]:
         if phrase:
             terms.append(phrase)
 
-    # Add remaining standalone tokens
+    # Add remaining unquoted segments as phrase terms
     remainder = _QUOTED_PHRASE_PATTERN.sub(" ", normalized)
-    for token in remainder.split():
-        token = token.strip(_QUOTE_CHARS + " ")
-        if token:
-            terms.append(token)
+    phrase = " ".join(remainder.split()).strip(_QUOTE_CHARS + " ")
+    if phrase:
+        terms.append(phrase)
 
     # Deduplicate while preserving order
     deduped: List[str] = []
@@ -70,7 +75,8 @@ def _term_to_regex(term: str) -> str:
     sane word boundaries when term starts/ends with word chars.
     """
     escaped = re.escape(term)
-    escaped = escaped.replace(r"\ ", r"\s+")
+    # Use optional whitespace to match both "Space x" and "SpaceX".
+    escaped = escaped.replace(r"\ ", r"\s*")
 
     prefix = r"(?<!\w)" if term and term[0].isalnum() else ""
     suffix = r"(?!\w)" if term and term[-1].isalnum() else ""
