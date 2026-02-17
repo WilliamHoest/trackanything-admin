@@ -1,5 +1,5 @@
 import asyncio
-from typing import List, Dict
+from typing import List, Dict, Optional
 from datetime import datetime, timedelta, timezone
 
 from app.services.scraping.providers.gnews import scrape_gnews
@@ -8,6 +8,26 @@ from app.services.scraping.providers.configurable import scrape_configurable_sou
 from app.services.scraping.providers.rss import scrape_rss
 from app.services.scraping.core.text_processing import normalize_url, get_platform_from_url
 from app.services.scraping.analyzers.relevance_filter import relevance_filter
+
+AI_RELEVANCE_FILTER_TEMP_DISABLED = True
+
+
+def _normalize_from_date(from_date: Optional[datetime], lookback_days: int) -> datetime:
+    now = datetime.now(timezone.utc)
+    if from_date is None:
+        return now - timedelta(days=lookback_days)
+
+    if from_date.tzinfo is None:
+        normalized = from_date.replace(tzinfo=timezone.utc)
+    else:
+        normalized = from_date.astimezone(timezone.utc)
+
+    if normalized > now:
+        print(f"⚠️ Received future from_date ({normalized.isoformat()}). Clamping to now.")
+        return now
+
+    return normalized
+
 
 async def fetch_all_mentions(keywords: List[str], lookback_days: int = 1, from_date: datetime = None) -> List[Dict]:
     """
@@ -27,9 +47,7 @@ async def fetch_all_mentions(keywords: List[str], lookback_days: int = 1, from_d
         print("⚠️ No keywords provided for scraping")
         return []
 
-    # Use explicit from_date if provided, otherwise calculate from lookback_days
-    if from_date is None:
-        from_date = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    from_date = _normalize_from_date(from_date, lookback_days)
 
     print(f"🚀 Starting parallel scraping with {len(keywords)} keywords")
     print(f"📝 Keywords: {keywords}")
@@ -110,6 +128,11 @@ async def fetch_and_filter_mentions(
         return []
 
     # Step 2: Apply AI relevance filter if enabled
+    if AI_RELEVANCE_FILTER_TEMP_DISABLED:
+        if apply_relevance_filter:
+            print("⚠️ AI relevance filter is temporarily disabled. Returning unfiltered mentions.")
+        return mentions
+
     if apply_relevance_filter and keywords:
         print(f"🤖 Running AI relevance filter on {len(mentions)} mentions...")
         filtered_mentions = await relevance_filter.filter_mentions(mentions, keywords)

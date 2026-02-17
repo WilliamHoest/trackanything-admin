@@ -7,10 +7,23 @@ import httpx
 from app.core.config import settings
 from app.services.scraping.core.http_client import (
     fetch_with_retry, 
-    get_random_user_agent, 
     TIMEOUT_SECONDS
 )
 from app.services.scraping.core.text_processing import clean_keywords
+
+
+def _normalize_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _to_gnews_iso(dt: datetime) -> str:
+    # GNews expects RFC3339/ISO8601, e.g. 2026-02-17T12:30:00Z
+    return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
 
 async def scrape_gnews(keywords: List[str], from_date: Optional[datetime] = None) -> List[Dict]:
     """
@@ -26,9 +39,14 @@ async def scrape_gnews(keywords: List[str], from_date: Optional[datetime] = None
             print("⚠️ GNEWS_API_KEY is not set.")
         return []
 
+    since = _normalize_utc(from_date) or (datetime.now(timezone.utc) - timedelta(hours=24))
     cleaned = clean_keywords(keywords)
     query = quote_plus(" OR ".join(cleaned))
-    url = f"https://gnews.io/api/v4/search?q={query}&token={settings.gnews_api_key}&lang=da&max=10"
+    since_iso = quote_plus(_to_gnews_iso(since))
+    url = (
+        f"https://gnews.io/api/v4/search?"
+        f"q={query}&token={settings.gnews_api_key}&lang=da,en&max=10&sortby=publishedAt&from={since_iso}"
+    )
 
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
@@ -39,8 +57,7 @@ async def scrape_gnews(keywords: List[str], from_date: Optional[datetime] = None
 
             articles_data = data.get("articles", [])
             entries = []
-            # Use provided from_date or default to 24 hours ago
-            since = from_date if from_date else datetime.now(timezone.utc) - timedelta(hours=24)
+            print(f"📅 GNews: Applying API cutoff from={_to_gnews_iso(since)}")
 
             for article in articles_data:
                 if "url" not in article:
