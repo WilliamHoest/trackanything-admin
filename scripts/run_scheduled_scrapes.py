@@ -93,6 +93,50 @@ async def get_platform_id(supabase, platform_name: str) -> int:
         return 1
 
 
+async def try_acquire_brand_scrape_lock(supabase, brand_id: int, stale_after_minutes: int = 180) -> bool:
+    """Try to acquire cross-process scrape lock for a brand."""
+    try:
+        now = datetime.now(timezone.utc)
+        stale_cutoff = (now - timedelta(minutes=stale_after_minutes)).isoformat()
+
+        # Clear stale lock (best effort)
+        supabase.table("brands").update({
+            "scrape_in_progress": False,
+            "scrape_started_at": None
+        }).eq("id", brand_id).eq("scrape_in_progress", True).lt("scrape_started_at", stale_cutoff).execute()
+
+        # Acquire lock if brand is free
+        result = supabase.table("brands").update({
+            "scrape_in_progress": True,
+            "scrape_started_at": now.isoformat()
+        }).eq("id", brand_id).eq("scrape_in_progress", False).execute()
+
+        return len(result.data or []) > 0
+    except Exception as e:
+        message = str(e).lower()
+        if "scrape_in_progress" in message or "scrape_started_at" in message:
+            logger.warning("Scrape lock columns missing; continuing without DB lock (run migration 009).")
+            return True
+        logger.error(f"Error acquiring lock for brand {brand_id}: {e}")
+        return False
+
+
+async def release_brand_scrape_lock(supabase, brand_id: int) -> bool:
+    """Release scrape lock for a brand."""
+    try:
+        result = supabase.table("brands").update({
+            "scrape_in_progress": False,
+            "scrape_started_at": None
+        }).eq("id", brand_id).execute()
+        return len(result.data or []) > 0
+    except Exception as e:
+        message = str(e).lower()
+        if "scrape_in_progress" in message or "scrape_started_at" in message:
+            return True
+        logger.error(f"Error releasing lock for brand {brand_id}: {e}")
+        return False
+
+
 async def scrape_brand(supabase, brand: Dict) -> Dict:
     """
     Scrape mentions for a single brand.
@@ -114,7 +158,22 @@ async def scrape_brand(supabase, brand: Dict) -> Dict:
     logger.info(f"🔍 Processing Brand: {brand_name} (ID: {brand_id})")
     logger.info("="*60)
 
+    lock_acquired = False
+    run_started_at = datetime.now(timezone.utc)
+
     try:
+        lock_acquired = await try_acquire_brand_scrape_lock(supabase, brand_id)
+        if not lock_acquired:
+            logger.warning(f"⏭️  Skipping '{brand_name}' because another scrape is already running")
+            return {
+                "brand_id": brand_id,
+                "brand_name": brand_name,
+                "success": True,
+                "mentions_found": 0,
+                "mentions_saved": 0,
+                "error": "Scrape already in progress"
+            }
+
         # 1. Fetch all active topics for this brand
         topics_result = supabase.table("topics").select("id, name").eq("brand_id", brand_id).eq("is_active", True).execute()
 
@@ -309,8 +368,7 @@ async def scrape_brand(supabase, brand: Dict) -> Dict:
                         logger.error(f"  ❌ Individual insert failed: {e}")
 
         # CRITICAL: Update last_scraped_at timestamp to prevent constant scraping
-        now_iso = datetime.now(timezone.utc).isoformat()
-        supabase.table("brands").update({"last_scraped_at": now_iso}).eq("id", brand_id).execute()
+        supabase.table("brands").update({"last_scraped_at": run_started_at.isoformat()}).eq("id", brand_id).execute()
         logger.info(f"✅ Updated last_scraped_at for brand '{brand_name}'")
 
         logger.info(f"📊 Summary for '{brand_name}':")
@@ -352,6 +410,9 @@ async def scrape_brand(supabase, brand: Dict) -> Dict:
             "mentions_saved": 0,
             "error": str(e)
         }
+    finally:
+        if lock_acquired:
+            await release_brand_scrape_lock(supabase, brand_id)
 
 
 async def main():

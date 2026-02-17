@@ -413,6 +413,7 @@ async def _get_config_for_domain(
 
 
 async def _scrape_article_content(
+    client: httpx.AsyncClient,
     url: str,
     keywords: List[str],
     from_date: Optional[datetime] = None,
@@ -431,6 +432,7 @@ async def _scrape_article_content(
     6. Returns article data or None
 
     Args:
+        client: Shared HTTP client (connection pooling)
         url: The article URL to scrape
         keywords: List of keywords to match
 
@@ -443,95 +445,88 @@ async def _scrape_article_content(
     patterns = compile_keyword_patterns(keywords)
     from_date_utc = _normalize_utc(from_date)
 
+    # Extract domain from URL
+    parsed = urlparse(url)
+    domain = _normalize_domain(parsed.netloc)
+
+    # Try to get configuration for this domain
+    config = await _get_config_for_domain(
+        domain,
+        config_cache=config_cache,
+        scrape_run_id=scrape_run_id
+    )
+
+    from app.services.scraping.core.http_client import get_default_headers
+    headers = get_default_headers()
+
     try:
-        # Extract domain from URL
-        parsed = urlparse(url)
-        domain = _normalize_domain(parsed.netloc)
-
-        # Try to get configuration for this domain
-        config = await _get_config_for_domain(
-            domain,
-            config_cache=config_cache,
-            scrape_run_id=scrape_run_id
-        )
-
-        async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-            from app.services.scraping.core.http_client import get_default_headers
-            headers = get_default_headers()
-
-            try:
-                response = await fetch_with_retry(client, url, headers=headers)
-            except httpx.HTTPStatusError as e:
-                if e.response is not None and e.response.status_code == 402:
-                    _log(scrape_run_id, f"Paywall blocked (402) for {url}", logging.INFO)
-                    return None
-                raise
-
-            soup = BeautifulSoup(response.text, "lxml")
-            title, content, date_str, date_confident, extracted_via = await _extract_content(
-                soup,
-                response.text,
-                config,
-                scrape_run_id=scrape_run_id
-            )
-
-            # Check for keyword match
-            text_to_search = f"{title} {content}"
-            if keyword_matches_text(patterns, text_to_search):
-                # Use config domain as platform name if available, otherwise extract from URL
-                if config and config.get('domain'):
-                    platform = config['domain']
-                else:
-                    platform = get_platform_from_url(url)
-
-                # Parse date if available (never default to "now" on parse failure)
-                published_parsed = None
-                if date_str:
-                    parsed_date = _parse_date_value(date_str, scrape_run_id=scrape_run_id)
-                    if parsed_date:
-                        # Filter by from_date only when we trust the extracted date value.
-                        if from_date_utc and parsed_date < from_date_utc:
-                            if _is_confident_date_for_filtering(date_str, date_confident):
-                                _log(
-                                    scrape_run_id,
-                                    f"Date too old for {url}: {parsed_date} < {from_date_utc}",
-                                    logging.DEBUG
-                                )
-                                return None
-                            _log(
-                                scrape_run_id,
-                                f"Date looked old but extraction was low confidence for {url}. Keeping article.",
-                                logging.DEBUG
-                            )
-                        published_parsed = parsed_date.timetuple()
-                    else:
-                        _log(scrape_run_id, f"Date missing or unparseable for {url}. Keeping published_parsed=None.", logging.DEBUG)
-
-                article = {
-                    "title": title or "Uden titel",
-                    "link": url,
-                    "published_parsed": published_parsed,
-                    "platform": platform,
-                    "content_teaser": content[:500] if content else ""
-                }
-
-                config_status = "config" if config else "generic"
-                _log(
-                    scrape_run_id,
-                    f"Match ({platform}, {config_status}, extracted_via={extracted_via}): {title}",
-                    logging.DEBUG
-                )
-                return article
-            else:
-                _log(scrape_run_id, f"Keyword match failed for {url}", logging.DEBUG)
-                _log(scrape_run_id, f"  Title: {len(title)} chars, Content: {len(content)} chars", logging.DEBUG)
-                # print(f"         Text snippet: {text_to_search[:100]}...") # Un-comment for deep debug
-
+        response = await fetch_with_retry(client, url, headers=headers)
+    except httpx.HTTPStatusError as e:
+        if e.response is not None and e.response.status_code == 402:
+            _log(scrape_run_id, f"Paywall blocked (402) for {url}", logging.INFO)
             return None
+        # Let non-retryable HTTP failures bubble up to caller.
+        raise
 
-    except Exception as e:
-        _log(scrape_run_id, f"Failed to scrape {url}: {e}", logging.WARNING)
-        return None
+    soup = BeautifulSoup(response.text, "lxml")
+    title, content, date_str, date_confident, extracted_via = await _extract_content(
+        soup,
+        response.text,
+        config,
+        scrape_run_id=scrape_run_id
+    )
+
+    # Check for keyword match
+    text_to_search = f"{title} {content}"
+    if keyword_matches_text(patterns, text_to_search):
+        # Use config domain as platform name if available, otherwise extract from URL
+        if config and config.get('domain'):
+            platform = config['domain']
+        else:
+            platform = get_platform_from_url(url)
+
+        # Parse date if available (never default to "now" on parse failure)
+        published_parsed = None
+        if date_str:
+            parsed_date = _parse_date_value(date_str, scrape_run_id=scrape_run_id)
+            if parsed_date:
+                # Filter by from_date only when we trust the extracted date value.
+                if from_date_utc and parsed_date < from_date_utc:
+                    if _is_confident_date_for_filtering(date_str, date_confident):
+                        _log(
+                            scrape_run_id,
+                            f"Date too old for {url}: {parsed_date} < {from_date_utc}",
+                            logging.DEBUG
+                        )
+                        return None
+                    _log(
+                        scrape_run_id,
+                        f"Date looked old but extraction was low confidence for {url}. Keeping article.",
+                        logging.DEBUG
+                    )
+                published_parsed = parsed_date.timetuple()
+            else:
+                _log(scrape_run_id, f"Date missing or unparseable for {url}. Keeping published_parsed=None.", logging.DEBUG)
+
+        article = {
+            "title": title or "Uden titel",
+            "link": url,
+            "published_parsed": published_parsed,
+            "platform": platform,
+            "content_teaser": content[:500] if content else ""
+        }
+
+        config_status = "config" if config else "generic"
+        _log(
+            scrape_run_id,
+            f"Match ({platform}, {config_status}, extracted_via={extracted_via}): {title}",
+            logging.DEBUG
+        )
+        return article
+
+    _log(scrape_run_id, f"Keyword match failed for {url}", logging.DEBUG)
+    _log(scrape_run_id, f"  Title: {len(title)} chars, Content: {len(content)} chars", logging.DEBUG)
+    return None
 
 
 async def scrape_configurable_sources(
@@ -584,8 +579,8 @@ async def scrape_configurable_sources(
         _log(scrape_run_id, "No searchable configs found (missing search_url_pattern)", logging.WARNING)
         return []
 
-    # Semaphore to limit concurrent requests (avoid rate limiting)
-    sem = asyncio.Semaphore(20)  # Max 20 concurrent requests
+    # Semaphore to limit concurrent requests while improving throughput.
+    sem = asyncio.Semaphore(50)  # Max 50 concurrent requests
 
     # Phase 1: Discovery - Find article URLs via search (PARALLEL)
     _log(scrape_run_id, "Running parallel discovery...")
@@ -599,7 +594,7 @@ async def scrape_configurable_sources(
         search_pattern = config['search_url_pattern']
         found_urls = set()
 
-        async with sem:  # Wait if more than 20 requests are in progress
+        async with sem:  # Wait if we hit concurrency limit
             try:
                 search_url = search_pattern.replace('{keyword}', quote_plus(keyword))
                 headers = {"User-Agent": get_random_user_agent()}
@@ -621,73 +616,77 @@ async def scrape_configurable_sources(
 
         return domain, found_urls
 
-    # Build all search tasks
-    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+    discovered_urls: Dict[str, set] = {}
+    articles: List[Dict] = []
+    limits = httpx.Limits(max_keepalive_connections=50, max_connections=100)
+    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS, limits=limits) as client:
+        # Build all search tasks
         tasks = []
         for config in searchable_configs:
-            for keyword in keywords[:5]:  # Limit keywords to avoid rate limiting
+            # Process all keywords for full brand coverage.
+            for keyword in keywords:
                 tasks.append(search_single_keyword(client, config, keyword))
 
         # Run all searches in parallel
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Collect discovered URLs
-    discovered_urls = {}
-    for result in results:
-        if isinstance(result, tuple):
-            domain, urls = result
-            if not domain:
-                continue
-            if domain not in discovered_urls:
-                discovered_urls[domain] = set()
-            discovered_urls[domain].update(urls)
+        # Collect discovered URLs
+        for result in results:
+            if isinstance(result, tuple):
+                domain, urls = result
+                if not domain:
+                    continue
+                if domain not in discovered_urls:
+                    discovered_urls[domain] = set()
+                discovered_urls[domain].update(urls)
 
-    # Print discovery summary
-    for domain, urls in discovered_urls.items():
-        _log(scrape_run_id, f"Discovered {len(urls)} URLs for {domain}", logging.DEBUG)
+        # Print discovery summary
+        for domain, urls in discovered_urls.items():
+            _log(scrape_run_id, f"Discovered {len(urls)} URLs for {domain}", logging.DEBUG)
 
-    # Phase 2: Extraction - Scrape each URL using unified method (PARALLEL)
-    _log(scrape_run_id, "Starting extraction phase...")
+        # Phase 2: Extraction - Scrape each URL using unified method (PARALLEL)
+        _log(scrape_run_id, "Starting extraction phase...")
 
-    async def extract_single_article(url: str) -> Optional[Dict]:
-        """Extract content from a single article URL."""
-        async with sem:
-            try:
-                return await _scrape_article_content(
-                    url,
-                    keywords,
-                    from_date=from_date,
-                    config_cache=config_cache,
-                    scrape_run_id=scrape_run_id
-                )
-            except Exception as e:
-                _log(scrape_run_id, f"Extraction failed for {url}: {e}", logging.WARNING)
-                return None
+        async def extract_single_article(url: str) -> Optional[Dict]:
+            """Extract content from a single article URL."""
+            async with sem:
+                try:
+                    return await _scrape_article_content(
+                        client,
+                        url,
+                        keywords,
+                        from_date=from_date,
+                        config_cache=config_cache,
+                        scrape_run_id=scrape_run_id
+                    )
+                except Exception as e:
+                    _log(scrape_run_id, f"Extraction failed for {url}: {e}", logging.WARNING)
+                    return None
 
-    # Build extraction tasks (limit per source)
-    extraction_tasks = []
-    skipped_non_article_urls = 0
-    for domain, urls in discovered_urls.items():
-        limited_urls = list(urls)[:max_articles_per_source]
-        for url in limited_urls:
-            if not _is_candidate_article_url(url, domain):
-                skipped_non_article_urls += 1
-                continue
-            extraction_tasks.append(extract_single_article(url))
+        # Build extraction tasks (limit per source)
+        extraction_tasks = []
+        skipped_non_article_urls = 0
+        for domain, urls in discovered_urls.items():
+            limited_urls = list(urls)[:max_articles_per_source]
+            for url in limited_urls:
+                if not _is_candidate_article_url(url, domain):
+                    skipped_non_article_urls += 1
+                    continue
+                extraction_tasks.append(extract_single_article(url))
 
-    if skipped_non_article_urls:
-        _log(
-            scrape_run_id,
-            f"Skipped {skipped_non_article_urls} non-article URLs before extraction",
-            logging.DEBUG
-        )
+        if skipped_non_article_urls:
+            _log(
+                scrape_run_id,
+                f"Skipped {skipped_non_article_urls} non-article URLs before extraction",
+                logging.DEBUG
+            )
 
-    # Run all extractions in parallel
-    _log(scrape_run_id, f"Extracting {len(extraction_tasks)} articles in parallel...")
-    article_results = await asyncio.gather(*extraction_tasks, return_exceptions=True)
+        # Run all extractions in parallel
+        _log(scrape_run_id, f"Extracting {len(extraction_tasks)} articles in parallel...")
+        article_results = await asyncio.gather(*extraction_tasks, return_exceptions=True)
 
-    # Filter out None and exceptions
-    articles = [a for a in article_results if a and not isinstance(a, Exception)]
+        # Filter out None and exceptions
+        articles = [a for a in article_results if a and not isinstance(a, Exception)]
 
     _log(scrape_run_id, f"Found {len(articles)} matching articles")
     return articles

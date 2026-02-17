@@ -98,8 +98,22 @@ async def scrape_brand(
 
     run_handler = None
     run_context_token = None
+    lock_acquired = False
+    run_started_at = datetime.now(timezone.utc)
 
     try:
+        lock_acquired = await crud.try_acquire_brand_scrape_lock(brand_id)
+        if not lock_acquired:
+            return BrandScrapeResponse(
+                message=f"Scrape already in progress for brand '{brand['name']}'",
+                brand_id=brand_id,
+                brand_name=brand["name"],
+                keywords_used=[],
+                mentions_found=0,
+                mentions_saved=0,
+                errors=["Another scrape run is active for this brand"]
+            )
+
         run_context_token = set_current_scrape_run_id(scrape_run_id)
         run_handler, run_log_path = add_scrape_run_file_handler(scrape_run_id)
         scraping_logger.info(f"[run:{scrape_run_id}] Per-run log file: {run_log_path}")
@@ -325,7 +339,7 @@ async def scrape_brand(
                 errors.extend(match_errors)
 
         # 5. Update last_scraped_at timestamp for the brand
-        await crud.update_brand_last_scraped(brand_id)
+        await crud.update_brand_last_scraped(brand_id, run_started_at)
         scraping_logger.info(f"[run:{scrape_run_id}] Updated last_scraped_at for brand '{brand['name']}'")
 
         return BrandScrapeResponse(
@@ -350,6 +364,10 @@ async def scrape_brand(
             errors=[f"Critical error: {str(e)}"]
         )
     finally:
+        if lock_acquired:
+            released = await crud.release_brand_scrape_lock(brand_id)
+            if not released:
+                scraping_logger.warning(f"[run:{scrape_run_id}] Failed to release scrape lock for brand {brand_id}")
         if run_handler is not None:
             remove_scrape_run_file_handler(run_handler)
         if run_context_token is not None:

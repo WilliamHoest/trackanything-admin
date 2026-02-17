@@ -9,7 +9,7 @@ from app.schemas import (
     source_config as source_config_schemas,
 )
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 class SupabaseCRUD:
     def __init__(self):
@@ -116,11 +116,63 @@ class SupabaseCRUD:
             print(f"Error deleting brand: {e}")
             return False
 
-    async def update_brand_last_scraped(self, brand_id: int) -> bool:
-        """Update brand's last_scraped_at timestamp"""
+    async def try_acquire_brand_scrape_lock(
+        self,
+        brand_id: int,
+        stale_after_minutes: int = 180
+    ) -> bool:
+        """
+        Try to acquire a per-brand scrape lock.
+
+        Returns True when lock is acquired, False when another scrape is active.
+        Stale locks older than `stale_after_minutes` are cleared automatically.
+        """
+        try:
+            now = datetime.utcnow()
+            stale_cutoff = (now - timedelta(minutes=stale_after_minutes)).isoformat()
+
+            # Clear stale lock (best effort)
+            self.supabase.table("brands").update({
+                "scrape_in_progress": False,
+                "scrape_started_at": None
+            }).eq("id", brand_id).eq("scrape_in_progress", True).lt("scrape_started_at", stale_cutoff).execute()
+
+            # Acquire lock if currently free
+            result = self.supabase.table("brands").update({
+                "scrape_in_progress": True,
+                "scrape_started_at": now.isoformat()
+            }).eq("id", brand_id).eq("scrape_in_progress", False).execute()
+
+            return len(result.data or []) > 0
+        except Exception as e:
+            message = str(e).lower()
+            if "scrape_in_progress" in message or "scrape_started_at" in message:
+                print("Scrape lock columns missing; continuing without DB lock (run migration 009).")
+                return True
+            print(f"Error acquiring brand scrape lock: {e}")
+            return False
+
+    async def release_brand_scrape_lock(self, brand_id: int) -> bool:
+        """Release per-brand scrape lock."""
         try:
             result = self.supabase.table("brands").update({
-                "last_scraped_at": datetime.utcnow().isoformat()
+                "scrape_in_progress": False,
+                "scrape_started_at": None
+            }).eq("id", brand_id).execute()
+            return len(result.data or []) > 0
+        except Exception as e:
+            message = str(e).lower()
+            if "scrape_in_progress" in message or "scrape_started_at" in message:
+                return True
+            print(f"Error releasing brand scrape lock: {e}")
+            return False
+
+    async def update_brand_last_scraped(self, brand_id: int, last_scraped_at: Optional[datetime] = None) -> bool:
+        """Update brand's last_scraped_at timestamp."""
+        try:
+            timestamp = last_scraped_at or datetime.utcnow()
+            result = self.supabase.table("brands").update({
+                "last_scraped_at": timestamp.isoformat()
             }).eq("id", brand_id).execute()
             return len(result.data) > 0
         except Exception as e:

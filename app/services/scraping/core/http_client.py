@@ -3,13 +3,13 @@ from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
+    retry_if_exception,
 )
 from fake_useragent import UserAgent
 
 # === Configuration ===
-TIMEOUT_SECONDS = 10
-MAX_RETRIES = 3
+TIMEOUT_SECONDS = 6
+MAX_RETRIES = 2
 RETRY_WAIT_MIN = 2  # seconds
 RETRY_WAIT_MAX = 8  # seconds
 
@@ -48,10 +48,34 @@ def get_default_headers() -> dict:
     headers["User-Agent"] = get_random_user_agent()
     return headers
 
+
+def _is_retryable_error(exception: Exception) -> bool:
+    """
+    Retry ONLY on:
+    - httpx.RequestError (network/transport issues)
+    - HTTP 429 (rate limiting)
+    - HTTP 5xx (server errors)
+
+    Fail fast on client errors such as 400/401/403/404 (and other non-429 4xx).
+    """
+    if isinstance(exception, httpx.RequestError):
+        return True
+
+    if isinstance(exception, httpx.HTTPStatusError):
+        status = exception.response.status_code if exception.response is not None else None
+        if status == 429:
+            return True
+        if status is not None and 500 <= status <= 599:
+            return True
+        return False
+
+    return False
+
+
 @retry(
     stop=stop_after_attempt(MAX_RETRIES),
     wait=wait_exponential(min=RETRY_WAIT_MIN, max=RETRY_WAIT_MAX),
-    retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.RequestError)),
+    retry=retry_if_exception(_is_retryable_error),
     reraise=True
 )
 async def fetch_with_retry(
