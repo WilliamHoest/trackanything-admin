@@ -6,6 +6,7 @@ from dateutil import parser as dateparser
 import httpx
 import asyncio
 import re
+import logging
 
 from app.crud.supabase_crud import SupabaseCRUD
 from app.services.scraping.core.http_client import (
@@ -24,6 +25,13 @@ from app.core.selectors import (
     GENERIC_CONTENT_SELECTORS,
     GENERIC_DATE_SELECTORS
 )
+
+logger = logging.getLogger("scraping")
+
+
+def _log(scrape_run_id: Optional[str], message: str, level: int = logging.INFO) -> None:
+    prefix = f"[run:{scrape_run_id}] " if scrape_run_id else ""
+    logger.log(level, "%s[Configurable] %s", prefix, message)
 
 DATE_CERTAINTY_PATTERN = re.compile(
     r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b|\b(19|20)\d{2}\b"
@@ -141,7 +149,8 @@ def _is_confident_date_for_filtering(date_str: str, from_attribute: bool) -> boo
 
 async def _get_config_for_domain(
     domain: str,
-    config_cache: Optional[Dict[str, Optional[Dict]]] = None
+    config_cache: Optional[Dict[str, Optional[Dict]]] = None,
+    scrape_run_id: Optional[str] = None
 ) -> Optional[Dict]:
     """
     Get saved source configuration for a specific domain.
@@ -177,10 +186,10 @@ async def _get_config_for_domain(
         for candidate in candidates:
             config = await crud.get_source_config_by_domain(candidate)
             if config:
-                print(f"✅ Found source config for {candidate}")
-                print(f"   Title: {config.get('title_selector')}")
-                print(f"   Content: {config.get('content_selector')}")
-                print(f"   Date: {config.get('date_selector')}")
+                _log(scrape_run_id, f"Found source config for {candidate}")
+                _log(scrape_run_id, f"  Title: {config.get('title_selector')}", logging.DEBUG)
+                _log(scrape_run_id, f"  Content: {config.get('content_selector')}", logging.DEBUG)
+                _log(scrape_run_id, f"  Date: {config.get('date_selector')}", logging.DEBUG)
                 if config_cache is not None:
                     config_cache[candidates[0]] = config
                     config_cache[candidate] = config
@@ -190,7 +199,7 @@ async def _get_config_for_domain(
             config_cache[candidates[0]] = None
         return None
     except Exception as e:
-        print(f"⚠️ Error fetching config for {domain}: {e}")
+        _log(scrape_run_id, f"Error fetching config for {domain}: {e}", logging.WARNING)
         return None
 
 
@@ -198,7 +207,8 @@ async def _scrape_article_content(
     url: str,
     keywords: List[str],
     from_date: Optional[datetime] = None,
-    config_cache: Optional[Dict[str, Optional[Dict]]] = None
+    config_cache: Optional[Dict[str, Optional[Dict]]] = None,
+    scrape_run_id: Optional[str] = None
 ) -> Optional[Dict]:
     """
     Unified method to scrape article content from any URL.
@@ -230,7 +240,11 @@ async def _scrape_article_content(
         domain = _normalize_domain(parsed.netloc)
 
         # Try to get configuration for this domain
-        config = await _get_config_for_domain(domain, config_cache=config_cache)
+        config = await _get_config_for_domain(
+            domain,
+            config_cache=config_cache,
+            scrape_run_id=scrape_run_id
+        )
 
         async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
             from app.services.scraping.core.http_client import get_default_headers
@@ -258,7 +272,11 @@ async def _scrape_article_content(
             
             if not title:
                 if config and config.get('title_selector'):
-                    print(f"      ⚠️ Configured title selector '{config['title_selector']}' failed or empty. Trying fallbacks.")
+                    _log(
+                        scrape_run_id,
+                        f"Configured title selector '{config['title_selector']}' failed or empty. Trying fallbacks.",
+                        logging.DEBUG
+                    )
                 
                 title_elem = try_selectors(soup, GENERIC_TITLE_SELECTORS)
                 if title_elem:
@@ -272,7 +290,11 @@ async def _scrape_article_content(
             
             if not content:
                 if config and config.get('content_selector'):
-                    print(f"      ⚠️ Configured content selector '{config['content_selector']}' failed or empty. Trying fallbacks.")
+                    _log(
+                        scrape_run_id,
+                        f"Configured content selector '{config['content_selector']}' failed or empty. Trying fallbacks.",
+                        logging.DEBUG
+                    )
                 
                 content_elem = try_selectors(soup, GENERIC_CONTENT_SELECTORS)
                 if content_elem:
@@ -286,7 +308,11 @@ async def _scrape_article_content(
                 
                 # If configured selector failed to find date, log warning but continue to generic fallback
                 if not date_str:
-                    print(f"      ⚠️ Configured date selector '{config['date_selector']}' found no date. Trying fallbacks.")
+                    _log(
+                        scrape_run_id,
+                        f"Configured date selector '{config['date_selector']}' found no date. Trying fallbacks.",
+                        logging.DEBUG
+                    )
 
             if not date_str:
                 date_elem = try_selectors(soup, GENERIC_DATE_SELECTORS)
@@ -316,21 +342,26 @@ async def _scrape_article_content(
                             # Filter by from_date only when we trust the extracted date value.
                             if from_date_utc and parsed_date < from_date_utc:
                                 if _is_confident_date_for_filtering(date_str, date_confident):
-                                    print(f"      ⚠️ Date too old for {url}: {parsed_date} < {from_date_utc}")
+                                    _log(
+                                        scrape_run_id,
+                                        f"Date too old for {url}: {parsed_date} < {from_date_utc}",
+                                        logging.DEBUG
+                                    )
                                     return None
-                                print(
-                                    f"      ⚠️ Date looked old but extraction was low confidence for {url}. "
-                                    "Keeping article."
+                                _log(
+                                    scrape_run_id,
+                                    f"Date looked old but extraction was low confidence for {url}. Keeping article.",
+                                    logging.DEBUG
                                 )
                             published_parsed = parsed_date.timetuple()
                     except Exception as e:
-                        print(f"      ⚠️ Date parse failed for '{date_str}': {e}")
+                        _log(scrape_run_id, f"Date parse failed for '{date_str}': {e}", logging.DEBUG)
                         pass
 
                 # If date parsing failed or date was missing, default to NOW
                 # This ensures we don't skip valid articles just because date extraction failed
                 if not published_parsed:
-                    print(f"      ⚠️ Date missing or unparseable for {url}. Defaulting to NOW.")
+                    _log(scrape_run_id, f"Date missing or unparseable for {url}. Defaulting to NOW.", logging.DEBUG)
                     published_parsed = datetime.now(timezone.utc).timetuple()
 
                 article = {
@@ -342,24 +373,25 @@ async def _scrape_article_content(
                 }
 
                 config_status = "config" if config else "generic"
-                print(f"   📰 {platform} match ({config_status}): {title}")
+                _log(scrape_run_id, f"Match ({platform}, {config_status}): {title}", logging.DEBUG)
                 return article
             else:
-                print(f"      ❌ Keyword match failed for {url}")
-                print(f"         Title: {len(title)} chars, Content: {len(content)} chars")
+                _log(scrape_run_id, f"Keyword match failed for {url}", logging.DEBUG)
+                _log(scrape_run_id, f"  Title: {len(title)} chars, Content: {len(content)} chars", logging.DEBUG)
                 # print(f"         Text snippet: {text_to_search[:100]}...") # Un-comment for deep debug
 
             return None
 
     except Exception as e:
-        print(f"   ⚠️ Failed to scrape {url}: {e}")
+        _log(scrape_run_id, f"Failed to scrape {url}: {e}", logging.WARNING)
         return None
 
 
 async def scrape_configurable_sources(
     keywords: List[str],
     max_articles_per_source: int = 50,
-    from_date: Optional[datetime] = None
+    from_date: Optional[datetime] = None,
+    scrape_run_id: Optional[str] = None
 ) -> List[Dict]:
     """
     Universal scraper that works with any source configured in database.
@@ -385,7 +417,7 @@ async def scrape_configurable_sources(
     if not keywords:
         return []
 
-    print("🔍 Configurable Sources: Starting universal discovery...")
+    _log(scrape_run_id, "Starting universal discovery...")
 
     # Fetch all configs with search patterns
     crud = SupabaseCRUD()
@@ -400,16 +432,16 @@ async def scrape_configurable_sources(
         if domain:
             config_cache[domain] = config
 
-    print(f"   Found {len(searchable_configs)} searchable configs")
+    _log(scrape_run_id, f"Found {len(searchable_configs)} searchable configs")
     if not searchable_configs:
-        print("   ⚠️ No searchable configs found (missing search_url_pattern)")
+        _log(scrape_run_id, "No searchable configs found (missing search_url_pattern)", logging.WARNING)
         return []
 
     # Semaphore to limit concurrent requests (avoid rate limiting)
     sem = asyncio.Semaphore(20)  # Max 20 concurrent requests
 
     # Phase 1: Discovery - Find article URLs via search (PARALLEL)
-    print("   🚀 Running parallel discovery...")
+    _log(scrape_run_id, "Running parallel discovery...")
 
     async def search_single_keyword(client: httpx.AsyncClient, config: Dict, keyword: str) -> tuple[str, set]:
         """Search a single keyword on a single source."""
@@ -438,7 +470,7 @@ async def scrape_configurable_sources(
                         found_urls.add(normalize_url(full_url))
 
             except Exception as e:
-                print(f"      ⚠️ Search failed for '{keyword}' on {domain}: {e}")
+                _log(scrape_run_id, f"Search failed for '{keyword}' on {domain}: {e}", logging.WARNING)
 
         return domain, found_urls
 
@@ -465,10 +497,10 @@ async def scrape_configurable_sources(
 
     # Print discovery summary
     for domain, urls in discovered_urls.items():
-        print(f"      ✅ Discovered {len(urls)} URLs for {domain}")
+        _log(scrape_run_id, f"Discovered {len(urls)} URLs for {domain}", logging.DEBUG)
 
     # Phase 2: Extraction - Scrape each URL using unified method (PARALLEL)
-    print("🔍 Configurable Sources: Starting extraction phase...")
+    _log(scrape_run_id, "Starting extraction phase...")
 
     async def extract_single_article(url: str) -> Optional[Dict]:
         """Extract content from a single article URL."""
@@ -478,10 +510,11 @@ async def scrape_configurable_sources(
                     url,
                     keywords,
                     from_date=from_date,
-                    config_cache=config_cache
+                    config_cache=config_cache,
+                    scrape_run_id=scrape_run_id
                 )
             except Exception as e:
-                print(f"   ⚠️ Extraction failed for {url}: {e}")
+                _log(scrape_run_id, f"Extraction failed for {url}: {e}", logging.WARNING)
                 return None
 
     # Build extraction tasks (limit per source)
@@ -496,14 +529,18 @@ async def scrape_configurable_sources(
             extraction_tasks.append(extract_single_article(url))
 
     if skipped_non_article_urls:
-        print(f"   ⚠️ Skipped {skipped_non_article_urls} non-article URLs before extraction")
+        _log(
+            scrape_run_id,
+            f"Skipped {skipped_non_article_urls} non-article URLs before extraction",
+            logging.DEBUG
+        )
 
     # Run all extractions in parallel
-    print(f"   🚀 Extracting {len(extraction_tasks)} articles in parallel...")
+    _log(scrape_run_id, f"Extracting {len(extraction_tasks)} articles in parallel...")
     article_results = await asyncio.gather(*extraction_tasks, return_exceptions=True)
 
     # Filter out None and exceptions
     articles = [a for a in article_results if a and not isinstance(a, Exception)]
 
-    print(f"✅ Configurable Sources: Found {len(articles)} matching articles")
+    _log(scrape_run_id, f"Found {len(articles)} matching articles")
     return articles

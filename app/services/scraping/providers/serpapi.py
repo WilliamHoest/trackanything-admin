@@ -1,11 +1,19 @@
 from typing import List, Dict, Optional
 from datetime import datetime, timezone
 import asyncio
+import logging
 from dateutil import parser as dateparser
 from serpapi import GoogleSearch
 
 from app.core.config import settings
 from app.services.scraping.core.text_processing import clean_keywords
+
+logger = logging.getLogger("scraping")
+
+
+def _log(scrape_run_id: Optional[str], message: str, level: int = logging.INFO) -> None:
+    prefix = f"[run:{scrape_run_id}] " if scrape_run_id else ""
+    logger.log(level, "%s[SerpAPI] %s", prefix, message)
 
 
 def _normalize_utc(dt: Optional[datetime]) -> Optional[datetime]:
@@ -40,7 +48,11 @@ def _build_tbs_from_date(from_date: Optional[datetime]) -> Optional[str]:
     return None
 
 
-async def scrape_serpapi(keywords: List[str], from_date: Optional[datetime] = None) -> List[Dict]:
+async def scrape_serpapi(
+    keywords: List[str],
+    from_date: Optional[datetime] = None,
+    scrape_run_id: Optional[str] = None
+) -> List[Dict]:
     """
     Fetch articles from SerpAPI (Google News).
     Uses async httpx with retry logic.
@@ -58,10 +70,10 @@ async def scrape_serpapi(keywords: List[str], from_date: Optional[datetime] = No
 
     try:
         if not settings.serpapi_key:
-            print("⚠️ SerpAPI key not found, skipping.")
+            _log(scrape_run_id, "SerpAPI key not found, skipping.", logging.WARNING)
             return []
 
-        print(f"🔍 SerpAPI: Scraping {len(keywords)} keywords ({query})...")
+        _log(scrape_run_id, f"Scraping {len(keywords)} keywords ({query})...")
 
         params = {
             "q": query,
@@ -69,13 +81,13 @@ async def scrape_serpapi(keywords: List[str], from_date: Optional[datetime] = No
             # "hl": "da",  # Removed to allow broader language results
             # "gl": "dk",  # Removed to allow broader geographic results
             "api_key": settings.serpapi_key,
-            "num": 100
+            "num": 20
         }
 
         tbs = _build_tbs_from_date(from_date_utc)
         if tbs:
             params["tbs"] = tbs
-            print(f"📅 SerpAPI: Applying Google News time filter tbs={tbs} for cutoff {from_date_utc.isoformat()}")
+            _log(scrape_run_id, f"Applying Google News time filter tbs={tbs} for cutoff {from_date_utc.isoformat()}")
 
         # Use asyncio.to_thread to run the blocking GoogleSearch call
         # This prevents blocking the event loop while waiting for SerpAPI
@@ -86,11 +98,11 @@ async def scrape_serpapi(keywords: List[str], from_date: Optional[datetime] = No
         results = await asyncio.to_thread(run_search)
 
         if "error" in results:
-            print(f"❌ SerpAPI error: {results['error']}")
+            _log(scrape_run_id, f"SerpAPI error: {results['error']}", logging.ERROR)
             return []
 
         news_results = results.get("news_results", [])
-        print(f"✅ SerpAPI: Found {len(news_results)} raw results")
+        _log(scrape_run_id, f"Found {len(news_results)} raw results")
 
         mentions = []
         for item in news_results:
@@ -131,9 +143,9 @@ async def scrape_serpapi(keywords: List[str], from_date: Optional[datetime] = No
             }
             mentions.append(mention)
 
-        print(f"✅ SerpAPI: Returning {len(mentions)} valid mentions")
+        _log(scrape_run_id, f"Returning {len(mentions)} valid mentions")
         return mentions
 
     except Exception as e:
-        print(f"❌ SerpAPI scraping failed: {e}")
+        _log(scrape_run_id, f"Scraping failed: {e}", logging.ERROR)
         return []

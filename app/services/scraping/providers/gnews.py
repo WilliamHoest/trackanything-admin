@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import quote_plus
 from dateutil import parser as dateparser
 import httpx
+import logging
 
 from app.core.config import settings
 from app.services.scraping.core.http_client import (
@@ -10,6 +11,13 @@ from app.services.scraping.core.http_client import (
     TIMEOUT_SECONDS
 )
 from app.services.scraping.core.text_processing import clean_keywords
+
+logger = logging.getLogger("scraping")
+
+
+def _log(scrape_run_id: Optional[str], message: str, level: int = logging.INFO) -> None:
+    prefix = f"[run:{scrape_run_id}] " if scrape_run_id else ""
+    logger.log(level, "%s[GNews] %s", prefix, message)
 
 
 def _normalize_utc(dt: Optional[datetime]) -> Optional[datetime]:
@@ -25,7 +33,11 @@ def _to_gnews_iso(dt: datetime) -> str:
     return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-async def scrape_gnews(keywords: List[str], from_date: Optional[datetime] = None) -> List[Dict]:
+async def scrape_gnews(
+    keywords: List[str],
+    from_date: Optional[datetime] = None,
+    scrape_run_id: Optional[str] = None
+) -> List[Dict]:
     """
     Fetch articles from GNews API.
     Uses async httpx with retry logic.
@@ -36,7 +48,7 @@ async def scrape_gnews(keywords: List[str], from_date: Optional[datetime] = None
     """
     if not keywords or not settings.gnews_api_key:
         if not settings.gnews_api_key:
-            print("⚠️ GNEWS_API_KEY is not set.")
+            _log(scrape_run_id, "GNEWS_API_KEY is not set.", logging.WARNING)
         return []
 
     since = _normalize_utc(from_date) or (datetime.now(timezone.utc) - timedelta(hours=24))
@@ -45,7 +57,7 @@ async def scrape_gnews(keywords: List[str], from_date: Optional[datetime] = None
     since_iso = quote_plus(_to_gnews_iso(since))
     url = (
         f"https://gnews.io/api/v4/search?"
-        f"q={query}&token={settings.gnews_api_key}&lang=da,en&max=10&sortby=publishedAt&from={since_iso}"
+        f"q={query}&token={settings.gnews_api_key}&lang=da,en&max=20&sortby=publishedAt&from={since_iso}"
     )
 
     try:
@@ -57,7 +69,7 @@ async def scrape_gnews(keywords: List[str], from_date: Optional[datetime] = None
 
             articles_data = data.get("articles", [])
             entries = []
-            print(f"📅 GNews: Applying API cutoff from={_to_gnews_iso(since)}")
+            _log(scrape_run_id, f"Applying API cutoff from={_to_gnews_iso(since)}")
 
             for article in articles_data:
                 if "url" not in article:
@@ -90,14 +102,14 @@ async def scrape_gnews(keywords: List[str], from_date: Optional[datetime] = None
                         "platform": "GNews",
                         "content_teaser": article.get("description", "")
                     })
-                    print(f"🔍 GNews match: {article.get('title', 'Uden titel')}")
+                    _log(scrape_run_id, f"Match: {article.get('title', 'Uden titel')}", logging.DEBUG)
 
                 except Exception as e:
-                    print(f"⚠️ GNews article parse error: {e}")
+                    _log(scrape_run_id, f"Article parse error: {e}", logging.WARNING)
                     continue
 
             return entries
 
     except Exception as e:
-        print(f"❌ GNews request failed: {e}")
+        _log(scrape_run_id, f"Request failed: {e}", logging.ERROR)
         return []

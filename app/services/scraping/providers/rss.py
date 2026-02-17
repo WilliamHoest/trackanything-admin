@@ -2,8 +2,21 @@ import feedparser
 import asyncio
 from typing import List, Dict, Optional
 from datetime import datetime, timezone, timedelta
+import logging
 
-async def scrape_rss(keywords: List[str], from_date: Optional[datetime] = None) -> List[Dict]:
+logger = logging.getLogger("scraping")
+
+
+def _log(scrape_run_id: Optional[str], message: str, level: int = logging.INFO) -> None:
+    prefix = f"[run:{scrape_run_id}] " if scrape_run_id else ""
+    logger.log(level, "%s[RSS] %s", prefix, message)
+
+
+async def scrape_rss(
+    keywords: List[str],
+    from_date: Optional[datetime] = None,
+    scrape_run_id: Optional[str] = None
+) -> List[Dict]:
     """
     Scraper RSS feeds via Google News RSS endpoint.
 
@@ -17,7 +30,7 @@ async def scrape_rss(keywords: List[str], from_date: Optional[datetime] = None) 
         from_date: Optional datetime to filter articles from. Defaults to 24 hours ago.
     """
     if not keywords:
-        print("⚠️ No keywords provided for RSS scraping")
+        _log(scrape_run_id, "No keywords provided for RSS scraping", logging.WARNING)
         return []
 
     mentions = []
@@ -29,7 +42,7 @@ async def scrape_rss(keywords: List[str], from_date: Optional[datetime] = None) 
     # Use provided from_date or default to 24 hours ago
     since = from_date if from_date else datetime.now(timezone.utc) - timedelta(hours=24)
 
-    print(f"🔍 RSS: Scraping {len(keywords)} keyword(s) via Google News RSS...")
+    _log(scrape_run_id, f"Scraping {len(keywords)} keyword(s) via Google News RSS...")
 
     for keyword in keywords:
         try:
@@ -63,15 +76,15 @@ async def scrape_rss(keywords: List[str], from_date: Optional[datetime] = None) 
                         "platform": "Google RSS",
                         "published_parsed": published_parsed,
                     })
-                    print(f"  📰 RSS match: {entry.get('title', 'Ingen titel')[:60]}")
+                    _log(scrape_run_id, f"Match: {entry.get('title', 'Ingen titel')[:60]}", logging.DEBUG)
 
                 except Exception as entry_error:
-                    print(f"  ⚠️ RSS entry parse error: {entry_error}")
+                    _log(scrape_run_id, f"Entry parse error: {entry_error}", logging.WARNING)
                     continue
 
         except Exception as e:
-            print(f"⚠️ RSS fejl for '{keyword}': {e}")
+            _log(scrape_run_id, f"Error for '{keyword}': {e}", logging.WARNING)
             continue
 
-    print(f"✅ RSS: Found {len(mentions)} articles")
+    _log(scrape_run_id, f"Found {len(mentions)} articles")
     return mentions

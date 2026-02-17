@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import uuid
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta, timezone
 
@@ -10,9 +12,19 @@ from app.services.scraping.core.text_processing import normalize_url, get_platfo
 from app.services.scraping.analyzers.relevance_filter import relevance_filter
 
 AI_RELEVANCE_FILTER_TEMP_DISABLED = True
+logger = logging.getLogger("scraping")
 
 
-def _normalize_from_date(from_date: Optional[datetime], lookback_days: int) -> datetime:
+def _run_log(scrape_run_id: Optional[str], message: str, level: int = logging.INFO) -> None:
+    prefix = f"[run:{scrape_run_id}] " if scrape_run_id else ""
+    logger.log(level, "%s%s", prefix, message)
+
+
+def _normalize_from_date(
+    from_date: Optional[datetime],
+    lookback_days: int,
+    scrape_run_id: Optional[str] = None
+) -> datetime:
     now = datetime.now(timezone.utc)
     if from_date is None:
         return now - timedelta(days=lookback_days)
@@ -23,13 +35,22 @@ def _normalize_from_date(from_date: Optional[datetime], lookback_days: int) -> d
         normalized = from_date.astimezone(timezone.utc)
 
     if normalized > now:
-        print(f"⚠️ Received future from_date ({normalized.isoformat()}). Clamping to now.")
+        _run_log(
+            scrape_run_id,
+            f"Received future from_date ({normalized.isoformat()}). Clamping to now.",
+            logging.WARNING
+        )
         return now
 
     return normalized
 
 
-async def fetch_all_mentions(keywords: List[str], lookback_days: int = 1, from_date: datetime = None) -> List[Dict]:
+async def fetch_all_mentions(
+    keywords: List[str],
+    lookback_days: int = 1,
+    from_date: datetime = None,
+    scrape_run_id: Optional[str] = None
+) -> List[Dict]:
     """
     Fetch mentions from all sources in parallel using asyncio.gather.
 
@@ -44,22 +65,23 @@ async def fetch_all_mentions(keywords: List[str], lookback_days: int = 1, from_d
         from_date: Explicit datetime cutoff. If set, lookback_days is ignored.
     """
     if not keywords:
-        print("⚠️ No keywords provided for scraping")
+        _run_log(scrape_run_id, "No keywords provided for scraping", logging.WARNING)
         return []
 
-    from_date = _normalize_from_date(from_date, lookback_days)
+    scrape_run_id = scrape_run_id or uuid.uuid4().hex[:10]
+    from_date = _normalize_from_date(from_date, lookback_days, scrape_run_id=scrape_run_id)
 
-    print(f"🚀 Starting parallel scraping with {len(keywords)} keywords")
-    print(f"📝 Keywords: {keywords}")
-    print(f"📅 Fetching articles from {from_date.isoformat()}")
+    _run_log(scrape_run_id, f"Starting parallel scraping with {len(keywords)} keywords")
+    _run_log(scrape_run_id, f"Keywords: {keywords}", logging.DEBUG)
+    _run_log(scrape_run_id, f"Fetching articles from {from_date.isoformat()}")
 
     # Run all scrapers in parallel with from_date
     # return_exceptions=True ensures one failure doesn't crash others
     results = await asyncio.gather(
-        scrape_gnews(keywords, from_date=from_date),
-        scrape_serpapi(keywords, from_date=from_date),
-        scrape_configurable_sources(keywords, from_date=from_date),
-        scrape_rss(keywords, from_date=from_date),
+        scrape_gnews(keywords, from_date=from_date, scrape_run_id=scrape_run_id),
+        scrape_serpapi(keywords, from_date=from_date, scrape_run_id=scrape_run_id),
+        scrape_configurable_sources(keywords, from_date=from_date, scrape_run_id=scrape_run_id),
+        scrape_rss(keywords, from_date=from_date, scrape_run_id=scrape_run_id),
         return_exceptions=True
     )
 
@@ -70,12 +92,12 @@ async def fetch_all_mentions(keywords: List[str], lookback_days: int = 1, from_d
     for idx, result in enumerate(results):
         source = source_names[idx]
         if isinstance(result, Exception):
-            print(f"❌ {source} scraping failed with exception: {result}")
+            _run_log(scrape_run_id, f"{source} scraping failed with exception: {result}", logging.ERROR)
         elif isinstance(result, list):
-            print(f"✅ {source}: found {len(result)} articles")
+            _run_log(scrape_run_id, f"{source}: found {len(result)} articles")
             all_mentions.extend(result)
         else:
-            print(f"⚠️ {source}: unexpected result type {type(result)}")
+            _run_log(scrape_run_id, f"{source}: unexpected result type {type(result)}", logging.WARNING)
 
     # Deduplicate based on normalized URLs
     seen_links = set()
@@ -96,7 +118,10 @@ async def fetch_all_mentions(keywords: List[str], lookback_days: int = 1, from_d
             unique_mentions.append(mention)
 
     duplicates_removed = len(all_mentions) - len(unique_mentions)
-    print(f"✅ Scraping complete: {len(unique_mentions)} unique mentions ({duplicates_removed} duplicates removed)")
+    _run_log(
+        scrape_run_id,
+        f"Scraping complete: {len(unique_mentions)} unique mentions ({duplicates_removed} duplicates removed)"
+    )
 
     return unique_mentions
 
@@ -105,7 +130,8 @@ async def fetch_and_filter_mentions(
     keywords: List[str],
     apply_relevance_filter: bool = True,
     lookback_days: int = 1,
-    from_date: datetime = None
+    from_date: datetime = None,
+    scrape_run_id: Optional[str] = None
 ) -> List[Dict]:
     """
     Fetch mentions from all sources and optionally filter by AI relevance.
@@ -121,8 +147,15 @@ async def fetch_and_filter_mentions(
     Returns:
         List of relevant mentions (deduplicated)
     """
+    scrape_run_id = scrape_run_id or uuid.uuid4().hex[:10]
+
     # Step 1: Fetch all mentions from sources with lookback
-    mentions = await fetch_all_mentions(keywords, lookback_days=lookback_days, from_date=from_date)
+    mentions = await fetch_all_mentions(
+        keywords,
+        lookback_days=lookback_days,
+        from_date=from_date,
+        scrape_run_id=scrape_run_id
+    )
 
     if not mentions:
         return []
@@ -130,14 +163,21 @@ async def fetch_and_filter_mentions(
     # Step 2: Apply AI relevance filter if enabled
     if AI_RELEVANCE_FILTER_TEMP_DISABLED:
         if apply_relevance_filter:
-            print("⚠️ AI relevance filter is temporarily disabled. Returning unfiltered mentions.")
+            _run_log(
+                scrape_run_id,
+                "AI relevance filter is temporarily disabled. Returning unfiltered mentions.",
+                logging.WARNING
+            )
         return mentions
 
     if apply_relevance_filter and keywords:
-        print(f"🤖 Running AI relevance filter on {len(mentions)} mentions...")
+        _run_log(scrape_run_id, f"Running AI relevance filter on {len(mentions)} mentions...")
         filtered_mentions = await relevance_filter.filter_mentions(mentions, keywords)
         filtered_count = len(mentions) - len(filtered_mentions)
-        print(f"✅ Relevance filter: kept {len(filtered_mentions)} mentions ({filtered_count} filtered out)")
+        _run_log(
+            scrape_run_id,
+            f"Relevance filter: kept {len(filtered_mentions)} mentions ({filtered_count} filtered out)"
+        )
         return filtered_mentions
 
     return mentions

@@ -3,8 +3,15 @@ from pydantic import BaseModel
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta, timezone
 from dateutil import parser as dateparser
+import uuid
 from app.security.auth import get_current_user
 from app.core.config import settings
+from app.core.logging_config import (
+    add_scrape_run_file_handler,
+    remove_scrape_run_file_handler,
+    reset_current_scrape_run_id,
+    set_current_scrape_run_id,
+)
 from app.core.supabase_db import get_supabase_crud
 from app.crud.supabase_crud import SupabaseCRUD
 from app.services.scraping.orchestrator import fetch_all_mentions, fetch_and_filter_mentions
@@ -87,8 +94,17 @@ async def scrape_brand(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Brand not found"
         )
+    scrape_run_id = f"b{brand_id}-{uuid.uuid4().hex[:8]}"
+
+    run_handler = None
+    run_context_token = None
 
     try:
+        run_context_token = set_current_scrape_run_id(scrape_run_id)
+        run_handler, run_log_path = add_scrape_run_file_handler(scrape_run_id)
+        scraping_logger.info(f"[run:{scrape_run_id}] Per-run log file: {run_log_path}")
+
+        scraping_logger.info(f"[run:{scrape_run_id}] Starting scrape for brand '{brand['name']}' ({brand_id})")
         # Get all active topics for this brand
         topics = await crud.get_topics_by_brand(brand_id)
         active_topics = [topic for topic in topics if topic.get("is_active", True)]
@@ -142,18 +158,19 @@ async def scrape_brand(
                 from_date = last_scraped_at
             if from_date and from_date.tzinfo is None:
                 from_date = from_date.replace(tzinfo=timezone.utc)
-            scraping_logger.info(f"Subsequent scrape — looking back to last_scraped_at: {from_date}")
+            scraping_logger.info(f"[run:{scrape_run_id}] Subsequent scrape — looking back to last_scraped_at: {from_date}")
         else:
             # First scrape: use initial_lookback_days
             lookback_days = brand.get("initial_lookback_days", 1) or 1
             from_date = datetime.now(timezone.utc) - timedelta(days=lookback_days)
-            scraping_logger.info(f"First scrape — looking back {lookback_days} day(s) to {from_date}")
+            scraping_logger.info(f"[run:{scrape_run_id}] First scrape — looking back {lookback_days} day(s) to {from_date}")
 
         # Fetch mentions using the improved search queries with AI relevance filtering
         mentions = await fetch_and_filter_mentions(
             query_list,
             apply_relevance_filter=True,
-            from_date=from_date
+            from_date=from_date,
+            scrape_run_id=scrape_run_id
         )
 
         if not mentions:
@@ -174,28 +191,28 @@ async def scrape_brand(
 
         # 1. Get or create all unique platforms
         unique_platforms = set(m.get("platform", "Unknown") for m in mentions)
-        scraping_logger.info(f"Unique platforms found in mentions: {unique_platforms}")
+        scraping_logger.info(f"[run:{scrape_run_id}] Unique platforms found in mentions: {unique_platforms}")
         platform_cache = {}
 
         for platform_name in unique_platforms:
-            scraping_logger.debug(f"Looking up platform: {platform_name}")
+            scraping_logger.debug(f"[run:{scrape_run_id}] Looking up platform: {platform_name}")
             platform = await crud.get_platform_by_name(platform_name)
             if not platform:
-                scraping_logger.info(f"Platform '{platform_name}' not found, creating...")
+                scraping_logger.info(f"[run:{scrape_run_id}] Platform '{platform_name}' not found, creating...")
                 platform = await crud.create_platform(platform_name)
                 if platform:
-                    scraping_logger.info(f"✅ Created platform '{platform_name}' with ID {platform['id']}")
+                    scraping_logger.info(f"[run:{scrape_run_id}] Created platform '{platform_name}' with ID {platform['id']}")
                 else:
-                    scraping_logger.error(f"❌ Failed to create platform '{platform_name}'")
+                    scraping_logger.error(f"[run:{scrape_run_id}] Failed to create platform '{platform_name}'")
             else:
-                scraping_logger.debug(f"Found existing platform '{platform_name}' with ID {platform['id']}")
+                scraping_logger.debug(f"[run:{scrape_run_id}] Found existing platform '{platform_name}' with ID {platform['id']}")
 
             if platform:
                 platform_cache[platform_name] = platform
             else:
-                scraping_logger.error(f"❌ Platform '{platform_name}' is None after lookup/creation")
+                scraping_logger.error(f"[run:{scrape_run_id}] Platform '{platform_name}' is None after lookup/creation")
 
-        scraping_logger.info(f"Platform cache has {len(platform_cache)} entries: {list(platform_cache.keys())}")
+        scraping_logger.info(f"[run:{scrape_run_id}] Platform cache has {len(platform_cache)} entries: {list(platform_cache.keys())}")
 
         # 2. Pre-fetch all topic keywords
         topic_keywords_cache = {}
@@ -281,14 +298,14 @@ async def scrape_brand(
             except Exception as e:
                 error_msg = f"Error preparing mention '{mention.get('title', 'Unknown')}': {str(e)}"
                 errors.append(error_msg)
-                print(f"❌ {error_msg}")
+                scraping_logger.error(f"[run:{scrape_run_id}] {error_msg}")
 
         # 4. BATCH INSERT all mentions at once (10-50x faster than individual inserts)
         mentions_saved = 0
         if mentions_to_insert:
             mentions_saved, batch_errors = await crud.batch_create_mentions(mentions_to_insert)
             errors.extend(batch_errors)
-            print(f"✅ Batch saved {mentions_saved} mentions for {brand['name']}")
+            scraping_logger.info(f"[run:{scrape_run_id}] Batch saved {mentions_saved} mentions for {brand['name']}")
 
         if mention_keyword_matches:
             mention_id_map = await crud.get_mentions_by_keys(brand_id, list(mention_keyword_matches.keys()))
@@ -309,7 +326,7 @@ async def scrape_brand(
 
         # 5. Update last_scraped_at timestamp for the brand
         await crud.update_brand_last_scraped(brand_id)
-        print(f"✅ Updated last_scraped_at for brand '{brand['name']}'")
+        scraping_logger.info(f"[run:{scrape_run_id}] Updated last_scraped_at for brand '{brand['name']}'")
 
         return BrandScrapeResponse(
             message=f"Scraping completed for brand '{brand['name']}'",
@@ -322,6 +339,7 @@ async def scrape_brand(
         )
         
     except Exception as e:
+        scraping_logger.exception(f"[run:{scrape_run_id}] Critical scrape error for brand '{brand['name']}': {e}")
         return BrandScrapeResponse(
             message=f"Scraping failed for brand '{brand['name']}'",
             brand_id=brand_id,
@@ -331,6 +349,11 @@ async def scrape_brand(
             mentions_saved=0,
             errors=[f"Critical error: {str(e)}"]
         )
+    finally:
+        if run_handler is not None:
+            remove_scrape_run_file_handler(run_handler)
+        if run_context_token is not None:
+            reset_current_scrape_run_id(run_context_token)
 
 @router.post("/user", response_model=UserScrapeResponse)
 async def scrape_user(
@@ -384,7 +407,7 @@ async def scrape_user(
             except Exception as e:
                 error_msg = f"Failed to process brand '{brand.get('name', 'Unknown')}': {str(e)}"
                 global_errors.append(error_msg)
-                print(f"❌ {error_msg}")
+                scraping_logger.error(error_msg)
         
         return UserScrapeResponse(
             message=f"Scraping completed for {len(active_brands)} active brands",

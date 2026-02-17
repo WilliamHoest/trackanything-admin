@@ -6,16 +6,91 @@ def clean_keywords(keywords: List[str]) -> List[str]:
     """Clean keywords by removing dots and commas"""
     return [kw.replace(".", "").replace(",", "").strip() for kw in keywords if kw.strip()]
 
+_QUOTE_CHARS = "\"'“”„‟«»`´"
+_QUOTED_PHRASE_PATTERN = re.compile(r'["“”„‟«»]([^"“”„‟«»]+)["“”„‟«»]')
+
+
+def _normalize_quotes(text: str) -> str:
+    return (
+        text.replace("“", '"')
+        .replace("”", '"')
+        .replace("„", '"')
+        .replace("‟", '"')
+        .replace("«", '"')
+        .replace("»", '"')
+        .replace("`", "'")
+        .replace("´", "'")
+    )
+
+
+def _extract_keyword_terms(keyword: str) -> List[str]:
+    """
+    Split a keyword into searchable terms.
+    Example: '"Novo Nordisk" Wegovy' -> ['Novo Nordisk', 'Wegovy']
+    """
+    normalized = _normalize_quotes(keyword).strip()
+    if not normalized:
+        return []
+
+    terms: List[str] = []
+
+    # Keep quoted phrases intact
+    for phrase in _QUOTED_PHRASE_PATTERN.findall(normalized):
+        phrase = " ".join(phrase.split()).strip(_QUOTE_CHARS + " ")
+        if phrase:
+            terms.append(phrase)
+
+    # Add remaining standalone tokens
+    remainder = _QUOTED_PHRASE_PATTERN.sub(" ", normalized)
+    for token in remainder.split():
+        token = token.strip(_QUOTE_CHARS + " ")
+        if token:
+            terms.append(token)
+
+    # Deduplicate while preserving order
+    deduped: List[str] = []
+    seen = set()
+    for term in terms:
+        key = term.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(term)
+
+    if deduped:
+        return deduped
+
+    fallback = normalized.strip(_QUOTE_CHARS + " ")
+    return [fallback] if fallback else []
+
+
+def _term_to_regex(term: str) -> str:
+    """
+    Build a regex fragment for a term/phrase with flexible whitespace and
+    sane word boundaries when term starts/ends with word chars.
+    """
+    escaped = re.escape(term)
+    escaped = escaped.replace(r"\ ", r"\s+")
+
+    prefix = r"(?<!\w)" if term and term[0].isalnum() else ""
+    suffix = r"(?!\w)" if term and term[-1].isalnum() else ""
+    return f"{prefix}{escaped}{suffix}"
+
+
 def compile_keyword_patterns(keywords: List[str]) -> List[re.Pattern]:
     """
-    Compile regex patterns for word boundary matching.
-    This prevents partial matches (e.g., "Gap" won't match "Singapore").
+    Compile regex patterns where all keyword terms must be present.
+    Handles quoted phrases robustly (e.g. '"Novo Nordisk" Wegovy').
     """
     patterns = []
     for keyword in keywords:
-        # Escape special regex characters and add word boundaries
-        escaped = re.escape(keyword)
-        pattern = re.compile(r'\b' + escaped + r'\b', re.IGNORECASE)
+        terms = _extract_keyword_terms(keyword)
+        if not terms:
+            continue
+
+        # Require each term/phrase to exist in the text, in any order.
+        lookaheads = "".join(f"(?=.*{_term_to_regex(term)})" for term in terms)
+        pattern = re.compile(lookaheads + r".*", re.IGNORECASE | re.DOTALL)
         patterns.append(pattern)
     return patterns
 
