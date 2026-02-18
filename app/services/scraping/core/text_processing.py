@@ -2,16 +2,6 @@ import re
 from urllib.parse import urlparse, urlunparse
 from typing import List
 
-def clean_keywords(keywords: List[str]) -> List[str]:
-    """Clean keywords by removing punctuation noise around phrase inputs."""
-    cleaned = []
-    for kw in keywords:
-        candidate = kw.replace(".", "").replace(",", "").strip()
-        candidate = candidate.strip(_QUOTE_CHARS + " ")
-        if candidate:
-            cleaned.append(candidate)
-    return cleaned
-
 _QUOTE_CHARS = "\"'“”„‟«»`´"
 _QUOTED_PHRASE_PATTERN = re.compile(r'["“”„‟«»]([^"“”„‟«»]+)["“”„‟«»]')
 
@@ -27,6 +17,33 @@ def _normalize_quotes(text: str) -> str:
         .replace("`", "'")
         .replace("´", "'")
     )
+
+
+def sanitize_search_input(text: str) -> str:
+    """
+    Sanitize user/topic keyword text for provider queries.
+
+    Removes quote characters anywhere in the string to avoid malformed
+    provider query syntax like: Iran" Krig.
+    """
+    if not text:
+        return ""
+
+    candidate = _normalize_quotes(text)
+    candidate = re.sub(r'["\']', " ", candidate)
+    candidate = candidate.replace(".", " ").replace(",", " ")
+    candidate = re.sub(r"\s+", " ", candidate).strip()
+    return candidate
+
+
+def clean_keywords(keywords: List[str]) -> List[str]:
+    """Clean keywords by sanitizing quotes/punctuation and collapsing whitespace."""
+    cleaned = []
+    for kw in keywords:
+        candidate = sanitize_search_input(kw)
+        if candidate:
+            cleaned.append(candidate)
+    return cleaned
 
 
 def _extract_keyword_terms(keyword: str) -> List[str]:

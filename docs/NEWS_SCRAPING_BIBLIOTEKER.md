@@ -12,8 +12,11 @@ Dokumentet fokuserer på to ting:
   - `app/services/scraping/core/http_client.py`
   - retries på `429` + `5xx`, async client i providers
 - Udnyt fuldt potentiale:
+  - retry-guard: retry kun idempotente kald (`GET`, `HEAD`) medmindre en operation er dokumenteret idempotent
+  - respekter `Retry-After` på `429`/`503` når header findes, før standard backoff
   - indfør per-domæne rate-limit (ikke kun global concurrency) for færre blokeringer
   - tilføj jitter i retry-wait for at undgå synkron retry-spikes
+  - indfør "circuit breaker light" pr. domæne (fx 5 fejl i træk -> cooldown 5-15 min)
   - brug ens header-profiler per request-type (RSS/API/HTML) fremfor kun random UA
   - log retry-attempt metadata (domain, status, attempt) for bedre tuning
 - Direkte gevinst:
@@ -28,6 +31,9 @@ Dokumentet fokuserer på to ting:
 - Udnyt fuldt potentiale:
   - kør trafilatura tidligere for domæner med kendt selector-ustabilitet
   - gem extraction-strategi pr. domæne i DB (fx `config`, `generic`, `trafilatura-first`)
+  - indfør objektiv quality-gate (score 0-100) før fallback-strategi vælges
+  - score kan baseres på tekstlængde, tekst/link-ratio, titel+dato tilstedeværelse og boilerplate-signaler
+  - hvis score < threshold: eskalér deterministisk til næste strategi (ikke ad hoc)
   - mål extraction-kvalitet per strategi (tekstlængde, parse-success, keyword-hitrate)
   - normalisér boilerplate-blokke før keyword-match (navigation/footer/legal)
 - Direkte gevinst:
@@ -42,6 +48,8 @@ Dokumentet fokuserer på to ting:
   - indfør confidence-felter ved dato-parse (high/medium/low)
   - gem rå dato-streng + parse-resultat til audit/tuning
   - undgå fallback til "nu" på svage datoer i alle providers (gælder især SerpAPI-flow)
+  - ved lav confidence: gem `published_at = NULL` + `date_confidence=low` og håndtér særskilt i UI/rangering
+  - brug kildeprioritet for dato: RSS `published/updated` > `schema.org datePublished` > side-tekst > ingen dato
 - Direkte gevinst:
   - færre falske "nye" omtaler
   - mere præcis filtrering på `from_date`
@@ -77,7 +85,8 @@ Dokumentet fokuserer på to ting:
   - nuværende dedupe i `fetch_all_mentions(...)` er URL-baseret
 - Implementering:
   - ny fil: `app/services/scraping/core/deduplication.py`
-  - exact hash (`sha256`) + fuzzy score på `title + content_teaser`
+  - 2-trins pipeline for performance: blocking (samme eTLD+1, samme dag +/-2 dage, titel-prefix hash) efterfulgt af fuzzy på kandidater (`rapidfuzz.fuzz.token_set_ratio(title)` + evt. simhash på brødtekst)
+  - exact hash (`sha256`) beholdes til hurtig exact dedupe
   - threshold per kilde (fx højere threshold for RSS)
 - Gevinst:
   - markant færre near-duplicates
@@ -89,7 +98,8 @@ Dokumentet fokuserer på to ting:
 - Problem:
   - I har concurrency-kontrol, men ikke egentlig request-rate kontrol per domæne
 - Implementering:
-  - limiter map pr. domæne i provider-laget
+  - limiter map pr. eTLD+1 (ikke kun hostname) i provider-laget
+  - tilføj override-liste for særlige hosts (`m.`, `amp.`, CDN/subdomæner)
   - forskellige profiler: API-kilder vs. HTML-kilder
 - Gevinst:
   - færre `429`
@@ -142,7 +152,19 @@ Dokumentet fokuserer på to ting:
 - Overvejelse imod:
   - kan reducere crawl-coverage på nogle domæner
 
-### Prioritet 7: `celery` + `redis` (først ved skaleringspres)
+### Prioritet 7: `tldextract`
+- Problem:
+  - domænegruppering er ofte forkert uden korrekt eTLD+1 parsing
+- Implementering:
+  - brug `tldextract` til limiter keys, metrics grouping og dedupe blocking
+  - central helper i `app/services/scraping/core/domain_utils.py`
+- Gevinst:
+  - stabil per-domæne styring
+  - færre kanttilfælde på `co.uk`-typer og subdomæner
+- Overvejelse imod:
+  - ekstra dependency, men lav integrationsrisiko
+
+### Prioritet 8: `celery` + `redis` (først ved skaleringspres)
 - Problem:
   - cron-script er simpelt, men begrænset ved høj kømængde/retry-behov
 - Implementering:
@@ -153,17 +175,37 @@ Dokumentet fokuserer på to ting:
 - Overvejelse imod:
   - markant højere systemkompleksitet
 
+## Små high-ROI biblioteker (lav risiko)
+
+### `orjson` (evt. `msgspec`)
+- Brug:
+  - hurtigere JSON serialisering/deserialisering i API-responser, logs og evt. jobpayloads
+- Gevinst:
+  - lavere CPU og latency ved store mention-lister
+- Overvejelse imod:
+  - kræver ensretning af JSON-håndtering i kritiske codepaths
+
+### `pydantic-settings` + `python-dotenv` (allerede i projektet)
+- Brug:
+  - styr scraper-profiler via config: retry policies, limiter-profiler, dedupe-thresholds, quality-gates
+- Gevinst:
+  - hurtigere tuning uden code deploy
+- Overvejelse imod:
+  - kræver stram governance af env/config varianter
+
 ## Biblioteker I bør undgå lige nu
 - `newspaper3k`: overlap med `trafilatura` og lav vedligeholdelsesværdi
 - `aiohttp`: overlap med eksisterende `httpx` setup
 - `selenium`: dårligere fit end `playwright` til moderne fallback-scenarier
 - `scrapy`: kræver redesign af eksisterende provider-arkitektur
+- nuance om `scrapy`: kan blive relevant som separat discovery-service senere, men ikke som direkte erstatning nu
 
 ## 30-dages konkret plan
 1. Implementer `rapidfuzz` dedupe-lag og mål duplicate-rate før/efter.
-2. Implementer `aiolimiter` per domæne og mål `429`-rate.
-3. Tilføj `prometheus-client` metrics for success/fail/latency/duplicates.
-4. Tilføj `sentry-sdk` med tags for hurtig incident triage.
+2. Implementer `tldextract` + `aiolimiter` (eTLD+1 keys) og mål `429`-rate.
+3. Tilføj quality-gate score i extraction-flow og mål parse-success per strategi.
+4. Tilføj `prometheus-client` metrics for success/fail/latency/duplicates.
+5. Tilføj `sentry-sdk` med tags for hurtig incident triage.
 
 ## Beslutningsregel for nye biblioteker
 Et nyt bibliotek indføres kun, hvis mindst 2 af 4 er opfyldt:

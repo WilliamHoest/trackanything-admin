@@ -15,22 +15,27 @@ from app.core.logging_config import (
 from app.core.supabase_db import get_supabase_crud
 from app.crud.supabase_crud import SupabaseCRUD
 from app.services.scraping.orchestrator import fetch_all_mentions, fetch_and_filter_mentions
+from app.services.scraping.core.text_processing import sanitize_search_input
 import logging
 
 router = APIRouter()
 scraping_logger = logging.getLogger("scraping")
 
 def build_search_query(topic: Dict, keyword_text: str, brand_name: str) -> str:
+    topic_value = sanitize_search_input(topic.get("name", ""))
+    keyword_value = sanitize_search_input(keyword_text)
+    brand_value = sanitize_search_input(brand_name)
+
     template = topic.get("query_template")
     if template:
         return (
             template
-            .replace("{{topic}}", topic.get("name", ""))
-            .replace("{{keyword}}", keyword_text)
-            .replace("{{brand}}", brand_name)
+            .replace("{{topic}}", topic_value)
+            .replace("{{keyword}}", keyword_value)
+            .replace("{{brand}}", brand_value)
             .strip()
         )
-    return f"\"{topic['name']}\" {keyword_text}"
+    return f"{topic_value} {keyword_value}".strip()
 
 def score_topic_match(topic_keywords: List[Dict], title: str, teaser: str) -> tuple[int, List[Dict]]:
     matches = []

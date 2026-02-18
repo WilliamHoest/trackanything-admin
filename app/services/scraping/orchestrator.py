@@ -8,7 +8,11 @@ from app.services.scraping.providers.gnews import scrape_gnews
 from app.services.scraping.providers.serpapi import scrape_serpapi
 from app.services.scraping.providers.configurable import scrape_configurable_sources
 from app.services.scraping.providers.rss import scrape_rss
-from app.services.scraping.core.text_processing import normalize_url, get_platform_from_url
+from app.services.scraping.core.text_processing import (
+    normalize_url,
+    get_platform_from_url,
+    clean_keywords,
+)
 from app.services.scraping.analyzers.relevance_filter import relevance_filter
 
 AI_RELEVANCE_FILTER_TEMP_DISABLED = True
@@ -64,24 +68,25 @@ async def fetch_all_mentions(
         lookback_days: Number of days to look back for mentions (default: 1). Ignored if from_date is set.
         from_date: Explicit datetime cutoff. If set, lookback_days is ignored.
     """
-    if not keywords:
+    sanitized_keywords = clean_keywords(keywords)
+    if not sanitized_keywords:
         _run_log(scrape_run_id, "No keywords provided for scraping", logging.WARNING)
         return []
 
     scrape_run_id = scrape_run_id or uuid.uuid4().hex[:10]
     from_date = _normalize_from_date(from_date, lookback_days, scrape_run_id=scrape_run_id)
 
-    _run_log(scrape_run_id, f"Starting parallel scraping with {len(keywords)} keywords")
-    _run_log(scrape_run_id, f"Keywords: {keywords}", logging.DEBUG)
+    _run_log(scrape_run_id, f"Starting parallel scraping with {len(sanitized_keywords)} keywords")
+    _run_log(scrape_run_id, f"Keywords: {sanitized_keywords}", logging.DEBUG)
     _run_log(scrape_run_id, f"Fetching articles from {from_date.isoformat()}")
 
     # Run all scrapers in parallel with from_date
     # return_exceptions=True ensures one failure doesn't crash others
     results = await asyncio.gather(
-        scrape_gnews(keywords, from_date=from_date, scrape_run_id=scrape_run_id),
-        scrape_serpapi(keywords, from_date=from_date, scrape_run_id=scrape_run_id),
-        scrape_configurable_sources(keywords, from_date=from_date, scrape_run_id=scrape_run_id),
-        scrape_rss(keywords, from_date=from_date, scrape_run_id=scrape_run_id),
+        scrape_gnews(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
+        scrape_serpapi(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
+        scrape_configurable_sources(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
+        scrape_rss(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
         return_exceptions=True
     )
 
@@ -150,8 +155,10 @@ async def fetch_and_filter_mentions(
     scrape_run_id = scrape_run_id or uuid.uuid4().hex[:10]
 
     # Step 1: Fetch all mentions from sources with lookback
+    sanitized_keywords = clean_keywords(keywords)
+
     mentions = await fetch_all_mentions(
-        keywords,
+        sanitized_keywords,
         lookback_days=lookback_days,
         from_date=from_date,
         scrape_run_id=scrape_run_id
@@ -170,9 +177,9 @@ async def fetch_and_filter_mentions(
             )
         return mentions
 
-    if apply_relevance_filter and keywords:
+    if apply_relevance_filter and sanitized_keywords:
         _run_log(scrape_run_id, f"Running AI relevance filter on {len(mentions)} mentions...")
-        filtered_mentions = await relevance_filter.filter_mentions(mentions, keywords)
+        filtered_mentions = await relevance_filter.filter_mentions(mentions, sanitized_keywords)
         filtered_count = len(mentions) - len(filtered_mentions)
         _run_log(
             scrape_run_id,
