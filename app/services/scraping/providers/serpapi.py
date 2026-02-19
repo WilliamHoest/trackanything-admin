@@ -170,49 +170,59 @@ async def scrape_serpapi(
             )
 
         mentions = []
-        skipped_by_date = 0
+        skipped_before_cutoff = 0
+        skipped_missing_date = 0
+        skipped_unparseable_date = 0
         for item in news_results:
-            # Parse date
-            published_parsed = None
-            if "date" in item:
+            raw_date = item.get("date")
+            parsed_dt: Optional[datetime] = None
+
+            if raw_date:
                 try:
-                    # SerpAPI returns relative dates like "2 hours ago" or absolute dates
-                    # We'll let dateparser handle it
-                    dt = dateparser.parse(item["date"])
-                    if dt:
-                        if dt.tzinfo is None:
-                            dt = dt.replace(tzinfo=timezone.utc)
-                        else:
-                            dt = dt.astimezone(timezone.utc)
-
-                        # Filter by from_date if provided
-                        if from_date_utc and dt < from_date_utc:
-                            skipped_by_date += 1
-                            continue
-
-                        published_parsed = dt.timetuple()
+                    # SerpAPI returns relative dates like "2 hours ago" or absolute dates.
+                    parsed_dt = dateparser.parse(raw_date)
                 except Exception:
-                    # If date parsing fails, default to now or skip?
-                    # Let's verify if we should skip
-                    pass
+                    parsed_dt = None
 
-            # If no date found/parsed, use current time as fallback
-            # (unless from_date strict filtering is required, but better to include than miss)
-            if not published_parsed:
-                published_parsed = datetime.now(timezone.utc).timetuple()
+                if parsed_dt is not None:
+                    if parsed_dt.tzinfo is None:
+                        parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
+                    else:
+                        parsed_dt = parsed_dt.astimezone(timezone.utc)
+
+            # Strict mode when cutoff is active:
+            # require a parseable date and enforce exact cutoff.
+            if from_date_utc is not None:
+                if not raw_date:
+                    skipped_missing_date += 1
+                    continue
+                if parsed_dt is None:
+                    skipped_unparseable_date += 1
+                    continue
+                if parsed_dt < from_date_utc:
+                    skipped_before_cutoff += 1
+                    continue
+
+            if parsed_dt is None:
+                parsed_dt = datetime.now(timezone.utc)
 
             mention = {
                 "title": item.get("title", "No title"),
                 "link": item.get("link", ""),
                 "content_teaser": item.get("snippet", ""),
-                "published_parsed": published_parsed,
+                "published_parsed": parsed_dt.timetuple(),
                 "platform": item.get("source", {}).get("title", "Google News"),
             }
             mentions.append(mention)
 
         _log(
             scrape_run_id,
-            f"Returning {len(mentions)} valid mentions (skipped_by_date={skipped_by_date})",
+            (
+                f"Returning {len(mentions)} valid mentions "
+                f"(skipped_before_cutoff={skipped_before_cutoff}, "
+                f"skipped_missing_date={skipped_missing_date}, "
+                f"skipped_unparseable_date={skipped_unparseable_date})"
+            ),
         )
         return mentions
 

@@ -106,6 +106,16 @@ async def fetch_all_mentions(
     _run_log(scrape_run_id, f"Starting parallel scraping with {len(sanitized_keywords)} keywords")
     _run_log(scrape_run_id, f"Keywords: {sanitized_keywords}", logging.DEBUG)
     _run_log(scrape_run_id, f"Fetching articles from {from_date.isoformat()}")
+    _run_log(
+        scrape_run_id,
+        (
+            "Provider toggles: "
+            f"gnews={settings.scraping_provider_gnews_enabled}, "
+            f"serpapi={settings.scraping_provider_serpapi_enabled}, "
+            f"configurable={settings.scraping_provider_configurable_enabled}, "
+            f"rss={settings.scraping_provider_rss_enabled}"
+        ),
+    )
 
     async def _run_provider(provider_name: str, provider_coro):
         provider_started_at = perf_counter()

@@ -26,6 +26,27 @@ app = FastAPI(
 
 logger.info("TrackAnything Admin API starting...")
 
+
+def _log_scraping_provider_toggles() -> None:
+    providers = {
+        "gnews": settings.scraping_provider_gnews_enabled,
+        "serpapi": settings.scraping_provider_serpapi_enabled,
+        "configurable": settings.scraping_provider_configurable_enabled,
+        "rss": settings.scraping_provider_rss_enabled,
+    }
+    active = [name for name, enabled in providers.items() if enabled]
+    inactive = [name for name, enabled in providers.items() if not enabled]
+    logger.info(
+        "Scraping providers at startup | active=%s | inactive=%s",
+        ",".join(active) if active else "none",
+        ",".join(inactive) if inactive else "none",
+    )
+
+
+@app.on_event("startup")
+async def log_startup_provider_state() -> None:
+    _log_scraping_provider_toggles()
+
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,

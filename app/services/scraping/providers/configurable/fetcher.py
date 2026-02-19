@@ -19,7 +19,6 @@ from .config import _get_config_for_domain, _log, _normalize_domain
 from .extractor import (
     _has_meaningful_content,
     _extract_content,
-    _is_confident_date_for_filtering,
     _parse_date_value,
 )
 from .config import PLAYWRIGHT_CONCURRENCY_LIMIT
@@ -139,7 +138,7 @@ async def _scrape_article_content(
         _log(scrape_run_id, f"Redirected article URL: {url} -> {final_url}", level=logging.DEBUG)
 
     soup = BeautifulSoup(response.text, "lxml")
-    title, content, date_str, date_confident, extracted_via = await _extract_content(
+    title, content, date_str, _date_confident, extracted_via = await _extract_content(
         soup,
         response.text,
         config,
@@ -157,7 +156,7 @@ async def _scrape_article_content(
         if playwright_result:
             pw_html, pw_final_url = playwright_result
             pw_soup = BeautifulSoup(pw_html, "lxml")
-            pw_title, pw_content, pw_date_str, pw_date_confident, pw_extracted_via = await _extract_content(
+            pw_title, pw_content, pw_date_str, _pw_date_confident, pw_extracted_via = await _extract_content(
                 pw_soup,
                 pw_html,
                 config,
@@ -169,7 +168,6 @@ async def _scrape_article_content(
                 content = pw_content
                 if pw_date_str:
                     date_str = pw_date_str
-                    date_confident = pw_date_confident
                 extracted_via = f"{pw_extracted_via}+playwright"
                 if pw_final_url and normalize_url(pw_final_url) != final_url:
                     _log(
@@ -212,29 +210,43 @@ async def _scrape_article_content(
             platform = get_platform_from_url(final_url)
 
         published_parsed = None
-        if date_str:
-            parsed_date = _parse_date_value(date_str, scrape_run_id=scrape_run_id)
-            if parsed_date:
-                if from_date_utc and parsed_date < from_date_utc:
-                    if _is_confident_date_for_filtering(date_str, date_confident):
-                        _log(
-                            scrape_run_id,
-                            f"Date too old for {final_url}: {parsed_date} < {from_date_utc}",
-                            level=logging.DEBUG,
-                        )
-                        return None
-                    _log(
-                        scrape_run_id,
-                        f"Date looked old but extraction was low confidence for {final_url}. Keeping article.",
-                        level=logging.DEBUG,
-                    )
-                published_parsed = parsed_date.timetuple()
-            else:
+        parsed_date = _parse_date_value(date_str, scrape_run_id=scrape_run_id) if date_str else None
+
+        # Strict cutoff policy for configurable sources:
+        # if from_date is active, article must have a parseable date and satisfy cutoff.
+        if from_date_utc is not None:
+            if not date_str:
+                observe_extraction("configurable", metrics_domain, "date_missing_cutoff_skip", 0)
                 _log(
                     scrape_run_id,
-                    f"Date missing or unparseable for {final_url}. Keeping published_parsed=None.",
+                    f"Date missing for {final_url} with active cutoff {from_date_utc.isoformat()}. Skipping.",
                     level=logging.DEBUG,
                 )
+                return None
+
+            if not parsed_date:
+                observe_extraction("configurable", metrics_domain, "date_unparseable_cutoff_skip", 0)
+                _log(
+                    scrape_run_id,
+                    (
+                        f"Date unparseable for {final_url} "
+                        f"(raw='{date_str}') with active cutoff {from_date_utc.isoformat()}. Skipping."
+                    ),
+                    level=logging.DEBUG,
+                )
+                return None
+
+            if parsed_date < from_date_utc:
+                observe_extraction("configurable", metrics_domain, "date_before_cutoff_skip", 0)
+                _log(
+                    scrape_run_id,
+                    f"Date too old for {final_url}: {parsed_date} < {from_date_utc}. Skipping.",
+                    level=logging.DEBUG,
+                )
+                return None
+
+        if parsed_date:
+            published_parsed = parsed_date.timetuple()
 
         article = {
             "title": title or "Uden titel",

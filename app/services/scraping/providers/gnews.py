@@ -150,6 +150,9 @@ async def scrape_gnews(
 
             articles_data = data.get("articles", [])
             entries = []
+            skipped_missing_date = 0
+            skipped_unparseable_date = 0
+            skipped_before_cutoff = 0
             _log(scrape_run_id, f"Applying API cutoff from={_to_gnews_iso(since)}")
 
             for article in articles_data:
@@ -159,12 +162,15 @@ async def scrape_gnews(
                 try:
                     published_at = article.get("publishedAt")
                     if not published_at:
+                        skipped_missing_date += 1
                         continue
                     try:
                         parsed = dateparser.parse(published_at)
                     except Exception:
+                        skipped_unparseable_date += 1
                         continue
                     if parsed is None:
+                        skipped_unparseable_date += 1
                         continue
 
                     # Ensure UTC-aware
@@ -174,6 +180,7 @@ async def scrape_gnews(
                         parsed = parsed.astimezone(timezone.utc)
 
                     if parsed < since:
+                        skipped_before_cutoff += 1
                         continue
 
                     entries.append({
@@ -189,6 +196,15 @@ async def scrape_gnews(
                     _log(scrape_run_id, f"Article parse error: {e}", logging.WARNING)
                     continue
 
+            _log(
+                scrape_run_id,
+                (
+                    f"Returning {len(entries)} valid mentions "
+                    f"(skipped_before_cutoff={skipped_before_cutoff}, "
+                    f"skipped_missing_date={skipped_missing_date}, "
+                    f"skipped_unparseable_date={skipped_unparseable_date})"
+                ),
+            )
             return entries
 
     except Exception as e:

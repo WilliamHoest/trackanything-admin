@@ -17,6 +17,14 @@ def _log(scrape_run_id: Optional[str], message: str, level: int = logging.INFO) 
     logger.log(level, "%s[RSS] %s", prefix, message)
 
 
+def _normalize_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 async def scrape_rss(
     keywords: List[str],
     from_date: Optional[datetime] = None,
@@ -41,8 +49,9 @@ async def scrape_rss(
     mentions = []
     total_entries_seen = 0
     total_kept = 0
-    total_old = 0
+    total_before_cutoff = 0
     total_missing_date = 0
+    total_unparseable_date = 0
     total_parse_errors = 0
 
     # Vi bruger Google News RSS endpoint som en gratis "hack"
@@ -50,17 +59,23 @@ async def scrape_rss(
     base_url = "https://news.google.com/rss/search?q={}&hl=da&gl=DK&ceid=DK:da"
 
     # Use provided from_date or default to 24 hours ago
-    since = from_date if from_date else datetime.now(timezone.utc) - timedelta(hours=24)
+    explicit_cutoff = _normalize_utc(from_date)
+    since = explicit_cutoff or (datetime.now(timezone.utc) - timedelta(hours=24))
 
     _log(scrape_run_id, f"Scraping {len(keywords)} keyword(s) via Google News RSS...")
+    _log(
+        scrape_run_id,
+        f"Applying strict cutoff since={since.isoformat()} (explicit_from_date={explicit_cutoff is not None})",
+    )
 
     for keyword in keywords:
         try:
             url = base_url.format(keyword.replace(" ", "+"))
             keyword_entries_seen = 0
             keyword_kept = 0
-            keyword_old = 0
+            keyword_before_cutoff = 0
             keyword_missing_date = 0
+            keyword_unparseable_date = 0
             keyword_parse_errors = 0
 
             # Apply per-domain RSS rate control before outbound request.
@@ -116,11 +131,15 @@ async def scrape_rss(
                     if not published_parsed:
                         keyword_missing_date += 1
                         continue
-                    published_dt = datetime(*published_parsed[:6], tzinfo=timezone.utc)
+                    try:
+                        published_dt = datetime(*published_parsed[:6], tzinfo=timezone.utc)
+                    except Exception:
+                        keyword_unparseable_date += 1
+                        continue
 
                     # Skip old articles
                     if published_dt < since:
-                        keyword_old += 1
+                        keyword_before_cutoff += 1
                         continue
 
                     # Extract link (Google News RSS wraps the real link)
@@ -143,15 +162,17 @@ async def scrape_rss(
 
             total_entries_seen += keyword_entries_seen
             total_kept += keyword_kept
-            total_old += keyword_old
+            total_before_cutoff += keyword_before_cutoff
             total_missing_date += keyword_missing_date
+            total_unparseable_date += keyword_unparseable_date
             total_parse_errors += keyword_parse_errors
             _log(
                 scrape_run_id,
                 (
                     f"Keyword '{keyword}' summary: entries={keyword_entries_seen}, "
-                    f"kept={keyword_kept}, old={keyword_old}, "
-                    f"missing_date={keyword_missing_date}, parse_errors={keyword_parse_errors}"
+                    f"kept={keyword_kept}, before_cutoff={keyword_before_cutoff}, "
+                    f"missing_date={keyword_missing_date}, unparseable_date={keyword_unparseable_date}, "
+                    f"parse_errors={keyword_parse_errors}"
                 ),
             )
 
@@ -168,7 +189,8 @@ async def scrape_rss(
         scrape_run_id,
         (
             f"Found {len(mentions)} articles. Totals: entries={total_entries_seen}, "
-            f"kept={total_kept}, old={total_old}, missing_date={total_missing_date}, "
+            f"kept={total_kept}, before_cutoff={total_before_cutoff}, "
+            f"missing_date={total_missing_date}, unparseable_date={total_unparseable_date}, "
             f"parse_errors={total_parse_errors}"
         ),
     )
