@@ -2,6 +2,7 @@ from typing import Dict, List, Optional
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 import logging
+import asyncio
 
 from bs4 import BeautifulSoup
 import httpx
@@ -15,10 +16,24 @@ from app.services.scraping.core.text_processing import (
 )
 from .config import _get_config_for_domain, _log, _normalize_domain
 from .extractor import (
+    _has_meaningful_content,
     _extract_content,
     _is_confident_date_for_filtering,
     _parse_date_value,
 )
+from .config import PLAYWRIGHT_CONCURRENCY_LIMIT
+
+try:
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+    from playwright.async_api import async_playwright
+except Exception:
+    async_playwright = None
+    PlaywrightTimeoutError = Exception
+
+
+PLAYWRIGHT_NAVIGATION_TIMEOUT_MS = 15000
+PLAYWRIGHT_RENDER_WAIT_MS = 800
+_playwright_semaphore = asyncio.Semaphore(PLAYWRIGHT_CONCURRENCY_LIMIT)
 
 
 def _normalize_utc(dt: Optional[datetime]) -> Optional[datetime]:
@@ -27,6 +42,49 @@ def _normalize_utc(dt: Optional[datetime]) -> Optional[datetime]:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+async def _fetch_with_playwright(
+    url: str,
+    scrape_run_id: Optional[str] = None,
+) -> Optional[tuple[str, str]]:
+    """
+    Fetch rendered HTML with Playwright for JS-heavy pages.
+    Returns tuple of (html, final_url) or None on failure.
+    """
+    if async_playwright is None:
+        _log(
+            scrape_run_id,
+            f"Playwright fallback unavailable (not installed) for {url}",
+            logging.DEBUG,
+        )
+        return None
+
+    async with _playwright_semaphore:
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                try:
+                    context = await browser.new_context()
+                    page = await context.new_page()
+                    await page.goto(
+                        url,
+                        wait_until="domcontentloaded",
+                        timeout=PLAYWRIGHT_NAVIGATION_TIMEOUT_MS,
+                    )
+                    await page.wait_for_timeout(PLAYWRIGHT_RENDER_WAIT_MS)
+                    html = await page.content()
+                    final_url = normalize_url(page.url) if page.url else normalize_url(url)
+                    await context.close()
+                    return html, final_url
+                finally:
+                    await browser.close()
+        except PlaywrightTimeoutError as e:
+            _log(scrape_run_id, f"Playwright timeout for {url}: {e}", logging.WARNING)
+            return None
+        except Exception as e:
+            _log(scrape_run_id, f"Playwright fallback failed for {url}: {type(e).__name__}: {e}", logging.WARNING)
+            return None
 
 
 async def _scrape_article_content(
@@ -77,6 +135,51 @@ async def _scrape_article_content(
         config,
         scrape_run_id=scrape_run_id,
     )
+
+    if not _has_meaningful_content(content):
+        _log(
+            scrape_run_id,
+            f"Standard fetch failed (len={len(content)}). Triggering Playwright fallback for {final_url}...",
+            logging.INFO,
+        )
+        playwright_result = await _fetch_with_playwright(final_url, scrape_run_id=scrape_run_id)
+        if playwright_result:
+            pw_html, pw_final_url = playwright_result
+            pw_soup = BeautifulSoup(pw_html, "lxml")
+            pw_title, pw_content, pw_date_str, pw_date_confident, pw_extracted_via = await _extract_content(
+                pw_soup,
+                pw_html,
+                config,
+                scrape_run_id=scrape_run_id,
+            )
+            if _has_meaningful_content(pw_content):
+                if pw_title:
+                    title = pw_title
+                content = pw_content
+                if pw_date_str:
+                    date_str = pw_date_str
+                    date_confident = pw_date_confident
+                extracted_via = f"{pw_extracted_via}+playwright"
+                if pw_final_url and normalize_url(pw_final_url) != final_url:
+                    _log(
+                        scrape_run_id,
+                        f"Playwright resolved redirected URL: {final_url} -> {pw_final_url}",
+                        logging.DEBUG,
+                    )
+                    final_url = normalize_url(pw_final_url)
+                _log(
+                    scrape_run_id,
+                    f"Playwright fallback succeeded for {final_url} (len={len(content)})",
+                    logging.INFO,
+                )
+            else:
+                _log(
+                    scrape_run_id,
+                    f"Playwright fallback returned low/empty content for {final_url} (len={len(pw_content)})",
+                    logging.DEBUG,
+                )
+        else:
+            _log(scrape_run_id, f"Playwright fallback failed for {final_url}", logging.DEBUG)
 
     text_to_search = f"{title} {content}"
     if keyword_matches_text(patterns, text_to_search):
