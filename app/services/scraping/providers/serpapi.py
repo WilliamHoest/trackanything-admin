@@ -52,6 +52,24 @@ def _build_tbs_from_date(from_date: Optional[datetime]) -> Optional[str]:
     return None
 
 
+def _detect_limit_signal(error_message: str) -> Optional[str]:
+    message = (error_message or "").lower()
+    if not message:
+        return None
+
+    if "rate limit" in message or "too many requests" in message:
+        return "rate_limit"
+    if "quota" in message or "searches left" in message:
+        return "quota"
+    if "monthly" in message and "search" in message:
+        return "quota"
+    if "insufficient" in message and "balance" in message:
+        return "quota"
+    if "limit reached" in message:
+        return "limit_reached"
+    return None
+
+
 async def scrape_serpapi(
     keywords: List[str],
     from_date: Optional[datetime] = None,
@@ -106,21 +124,53 @@ async def scrape_serpapi(
         async with limiter:
             results = await asyncio.to_thread(run_search)
         status_code = "200" if "error" not in results else "api_error"
+        request_duration = perf_counter() - request_started_at
         observe_http_request(
             provider="serpapi",
             domain=etld1,
             status_code=status_code,
-            duration_seconds=perf_counter() - request_started_at,
+            duration_seconds=request_duration,
+        )
+
+        metadata = results.get("search_metadata", {})
+        meta_status = metadata.get("status", "unknown")
+        news_results = results.get("news_results", [])
+        _log(
+            scrape_run_id,
+            (
+                f"Response: status={meta_status}, http_metric={status_code}, "
+                f"duration={request_duration:.2f}s, news_results={len(news_results)}"
+            ),
         )
 
         if "error" in results:
-            _log(scrape_run_id, f"SerpAPI error: {results['error']}", logging.ERROR)
+            error_message = str(results.get("error", "Unknown SerpAPI error"))
+            limit_signal = _detect_limit_signal(error_message)
+            if limit_signal:
+                _log(
+                    scrape_run_id,
+                    f"Possible SerpAPI {limit_signal} detected: {error_message}",
+                    logging.WARNING,
+                )
+            else:
+                _log(scrape_run_id, f"SerpAPI error: {error_message}", logging.ERROR)
+            observe_http_error(
+                provider="serpapi",
+                domain=etld1,
+                error_type=f"api_{limit_signal or 'error'}",
+            )
             return []
 
-        news_results = results.get("news_results", [])
         _log(scrape_run_id, f"Found {len(news_results)} raw results")
+        if not news_results:
+            _log(
+                scrape_run_id,
+                "No news_results returned by SerpAPI (empty result set).",
+                logging.WARNING,
+            )
 
         mentions = []
+        skipped_by_date = 0
         for item in news_results:
             # Parse date
             published_parsed = None
@@ -137,6 +187,7 @@ async def scrape_serpapi(
 
                         # Filter by from_date if provided
                         if from_date_utc and dt < from_date_utc:
+                            skipped_by_date += 1
                             continue
 
                         published_parsed = dt.timetuple()
@@ -159,7 +210,10 @@ async def scrape_serpapi(
             }
             mentions.append(mention)
 
-        _log(scrape_run_id, f"Returning {len(mentions)} valid mentions")
+        _log(
+            scrape_run_id,
+            f"Returning {len(mentions)} valid mentions (skipped_by_date={skipped_by_date})",
+        )
         return mentions
 
     except Exception as e:
@@ -168,5 +222,5 @@ async def scrape_serpapi(
             domain=get_etld_plus_one("https://serpapi.com"),
             error_type=type(e).__name__,
         )
-        _log(scrape_run_id, f"Scraping failed: {e}", logging.ERROR)
+        _log(scrape_run_id, f"Scraping failed: {type(e).__name__}: {e}", logging.ERROR)
         return []

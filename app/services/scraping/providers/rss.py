@@ -39,6 +39,11 @@ async def scrape_rss(
         return []
 
     mentions = []
+    total_entries_seen = 0
+    total_kept = 0
+    total_old = 0
+    total_missing_date = 0
+    total_parse_errors = 0
 
     # Vi bruger Google News RSS endpoint som en gratis "hack"
     # Det giver os data uden API key limits (dog med rate limits)
@@ -52,6 +57,11 @@ async def scrape_rss(
     for keyword in keywords:
         try:
             url = base_url.format(keyword.replace(" ", "+"))
+            keyword_entries_seen = 0
+            keyword_kept = 0
+            keyword_old = 0
+            keyword_missing_date = 0
+            keyword_parse_errors = 0
 
             # Apply per-domain RSS rate control before outbound request.
             etld1 = get_etld_plus_one(url)
@@ -67,20 +77,50 @@ async def scrape_rss(
                 status_code=status_code,
                 duration_seconds=perf_counter() - request_started_at,
             )
+            _log(
+                scrape_run_id,
+                f"Keyword '{keyword}': feed status={status_code}",
+                logging.DEBUG,
+            )
+
+            status_numeric = int(status_code) if status_code.isdigit() else 200
+            if status_numeric >= 400:
+                _log(
+                    scrape_run_id,
+                    f"Keyword '{keyword}': feed returned HTTP {status_code} (possible throttle/limit)",
+                    logging.WARNING,
+                )
+                observe_http_error(
+                    provider="rss",
+                    domain=etld1,
+                    error_type=f"http_{status_code}",
+                )
+
+            if getattr(feed, "bozo", 0):
+                bozo_exception = getattr(feed, "bozo_exception", None)
+                _log(
+                    scrape_run_id,
+                    f"Keyword '{keyword}': feed parser bozo=1 ({bozo_exception})",
+                    logging.WARNING,
+                )
 
             if not hasattr(feed, 'entries'):
+                _log(scrape_run_id, f"Keyword '{keyword}': no entries attribute in feed", logging.WARNING)
                 continue
 
+            keyword_entries_seen = len(feed.entries)
             for entry in feed.entries:
                 try:
                     # Parse published date - skip articles without parsable date
                     published_parsed = entry.get("published_parsed")
                     if not published_parsed:
+                        keyword_missing_date += 1
                         continue
                     published_dt = datetime(*published_parsed[:6], tzinfo=timezone.utc)
 
                     # Skip old articles
                     if published_dt < since:
+                        keyword_old += 1
                         continue
 
                     # Extract link (Google News RSS wraps the real link)
@@ -93,11 +133,27 @@ async def scrape_rss(
                         "platform": "Google RSS",
                         "published_parsed": published_parsed,
                     })
+                    keyword_kept += 1
                     _log(scrape_run_id, f"Match: {entry.get('title', 'Ingen titel')[:60]}", logging.DEBUG)
 
                 except Exception as entry_error:
+                    keyword_parse_errors += 1
                     _log(scrape_run_id, f"Entry parse error: {entry_error}", logging.WARNING)
                     continue
+
+            total_entries_seen += keyword_entries_seen
+            total_kept += keyword_kept
+            total_old += keyword_old
+            total_missing_date += keyword_missing_date
+            total_parse_errors += keyword_parse_errors
+            _log(
+                scrape_run_id,
+                (
+                    f"Keyword '{keyword}' summary: entries={keyword_entries_seen}, "
+                    f"kept={keyword_kept}, old={keyword_old}, "
+                    f"missing_date={keyword_missing_date}, parse_errors={keyword_parse_errors}"
+                ),
+            )
 
         except Exception as e:
             observe_http_error(
@@ -108,5 +164,12 @@ async def scrape_rss(
             _log(scrape_run_id, f"Error for '{keyword}': {e}", logging.WARNING)
             continue
 
-    _log(scrape_run_id, f"Found {len(mentions)} articles")
+    _log(
+        scrape_run_id,
+        (
+            f"Found {len(mentions)} articles. Totals: entries={total_entries_seen}, "
+            f"kept={total_kept}, old={total_old}, missing_date={total_missing_date}, "
+            f"parse_errors={total_parse_errors}"
+        ),
+    )
     return mentions
