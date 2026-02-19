@@ -2,9 +2,11 @@ import feedparser
 import asyncio
 from typing import List, Dict, Optional
 from datetime import datetime, timezone, timedelta
+from time import perf_counter
 import logging
 
 from app.services.scraping.core.domain_utils import get_etld_plus_one
+from app.services.scraping.core.metrics import observe_http_error, observe_http_request
 from app.services.scraping.core.rate_limit import get_domain_limiter
 
 logger = logging.getLogger("scraping")
@@ -54,9 +56,17 @@ async def scrape_rss(
             # Apply per-domain RSS rate control before outbound request.
             etld1 = get_etld_plus_one(url)
             limiter = get_domain_limiter(etld1, profile="rss")
+            request_started_at = perf_counter()
             async with limiter:
                 # feedparser is blocking, so we run it in a thread.
                 feed = await asyncio.to_thread(feedparser.parse, url)
+            status_code = str(getattr(feed, "status", 200))
+            observe_http_request(
+                provider="rss",
+                domain=etld1,
+                status_code=status_code,
+                duration_seconds=perf_counter() - request_started_at,
+            )
 
             if not hasattr(feed, 'entries'):
                 continue
@@ -90,6 +100,11 @@ async def scrape_rss(
                     continue
 
         except Exception as e:
+            observe_http_error(
+                provider="rss",
+                domain=get_etld_plus_one(url),
+                error_type=type(e).__name__,
+            )
             _log(scrape_run_id, f"Error for '{keyword}': {e}", logging.WARNING)
             continue
 

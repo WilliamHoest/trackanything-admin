@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta, timezone
+from time import perf_counter
 from dateutil import parser as dateparser
 import uuid
 from app.security.auth import get_current_user
@@ -16,6 +17,7 @@ from app.core.supabase_db import get_supabase_crud
 from app.crud.supabase_crud import SupabaseCRUD
 from app.services.scraping.orchestrator import fetch_all_mentions, fetch_and_filter_mentions
 from app.services.scraping.core.text_processing import sanitize_search_input
+from app.services.scraping.core.metrics import observe_scrape_run
 import logging
 
 router = APIRouter()
@@ -105,10 +107,13 @@ async def scrape_brand(
     run_context_token = None
     lock_acquired = False
     run_started_at = datetime.now(timezone.utc)
+    run_started_perf = perf_counter()
+    run_status = "error"
 
     try:
         lock_acquired = await crud.try_acquire_brand_scrape_lock(brand_id)
         if not lock_acquired:
+            run_status = "locked"
             return BrandScrapeResponse(
                 message=f"Scrape already in progress for brand '{brand['name']}'",
                 brand_id=brand_id,
@@ -129,6 +134,7 @@ async def scrape_brand(
         active_topics = [topic for topic in topics if topic.get("is_active", True)]
         
         if not active_topics:
+            run_status = "no_topics"
             return BrandScrapeResponse(
                 message=f"No active topics found for brand '{brand['name']}'",
                 brand_id=brand_id,
@@ -154,6 +160,7 @@ async def scrape_brand(
         query_list = list(search_queries)
         
         if not query_list:
+            run_status = "no_keywords"
             return BrandScrapeResponse(
                 message=f"No keywords found for brand '{brand['name']}'",
                 brand_id=brand_id,
@@ -193,6 +200,7 @@ async def scrape_brand(
         )
 
         if not mentions:
+            run_status = "no_mentions"
             return BrandScrapeResponse(
                 message=f"No mentions found for brand '{brand['name']}'",
                 brand_id=brand_id,
@@ -347,6 +355,7 @@ async def scrape_brand(
         await crud.update_brand_last_scraped(brand_id, run_started_at)
         scraping_logger.info(f"[run:{scrape_run_id}] Updated last_scraped_at for brand '{brand['name']}'")
 
+        run_status = "success"
         return BrandScrapeResponse(
             message=f"Scraping completed for brand '{brand['name']}'",
             brand_id=brand_id,
@@ -358,6 +367,7 @@ async def scrape_brand(
         )
         
     except Exception as e:
+        run_status = "error"
         scraping_logger.exception(f"[run:{scrape_run_id}] Critical scrape error for brand '{brand['name']}': {e}")
         return BrandScrapeResponse(
             message=f"Scraping failed for brand '{brand['name']}'",
@@ -369,6 +379,11 @@ async def scrape_brand(
             errors=[f"Critical error: {str(e)}"]
         )
     finally:
+        observe_scrape_run(
+            scope="brand",
+            status=run_status,
+            duration_seconds=perf_counter() - run_started_perf,
+        )
         if lock_acquired:
             released = await crud.release_brand_scrape_lock(brand_id)
             if not released:

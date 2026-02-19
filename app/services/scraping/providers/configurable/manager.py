@@ -8,6 +8,7 @@ import httpx
 
 from app.crud.supabase_crud import SupabaseCRUD
 from app.services.scraping.core.http_client import TIMEOUT_SECONDS
+from app.services.scraping.core.metrics import observe_extraction
 from .config import (
     DEFAULT_MAX_ARTICLES_PER_SOURCE,
     DISCOVERY_CONCURRENCY,
@@ -100,6 +101,7 @@ async def scrape_configurable_sources(
 
             if domain in open_circuit_domains:
                 _log(scrape_run_id, f"Skipping {url} (circuit open for {domain})", logging.DEBUG)
+                observe_extraction("configurable", domain, "circuit_open_skip", 0)
                 return None
 
             domain_sem = domain_semaphores.setdefault(
@@ -111,6 +113,7 @@ async def scrape_configurable_sources(
                 async with domain_sem:
                     if domain in open_circuit_domains:
                         _log(scrape_run_id, f"Skipping {url} (circuit opened for {domain})", logging.DEBUG)
+                        observe_extraction("configurable", domain, "circuit_open_skip", 0)
                         return None
 
                     try:
@@ -140,6 +143,7 @@ async def scrape_configurable_sources(
                             f"Extraction failed for {url}: {type(e).__name__}: {repr(e)}",
                             logging.WARNING,
                         )
+                        observe_extraction("configurable", domain, f"exception_{type(e).__name__}", 0)
                         return None
 
         extraction_tasks = []

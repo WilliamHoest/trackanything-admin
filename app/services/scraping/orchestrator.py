@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import uuid
+from time import perf_counter
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta, timezone
 
@@ -14,6 +15,10 @@ from app.services.scraping.core.text_processing import (
     clean_keywords,
 )
 from app.services.scraping.analyzers.relevance_filter import relevance_filter
+from app.services.scraping.core.metrics import (
+    observe_duplicates_removed,
+    observe_provider_run,
+)
 
 AI_RELEVANCE_FILTER_TEMP_DISABLED = True
 logger = logging.getLogger("scraping")
@@ -80,13 +85,53 @@ async def fetch_all_mentions(
     _run_log(scrape_run_id, f"Keywords: {sanitized_keywords}", logging.DEBUG)
     _run_log(scrape_run_id, f"Fetching articles from {from_date.isoformat()}")
 
+    async def _run_provider(provider_name: str, provider_coro):
+        provider_started_at = perf_counter()
+        try:
+            result = await provider_coro
+            if isinstance(result, list):
+                observe_provider_run(
+                    provider=provider_name,
+                    status="success",
+                    duration_seconds=perf_counter() - provider_started_at,
+                    articles=len(result),
+                )
+            else:
+                observe_provider_run(
+                    provider=provider_name,
+                    status="unexpected_result",
+                    duration_seconds=perf_counter() - provider_started_at,
+                    articles=0,
+                )
+            return result
+        except Exception:
+            observe_provider_run(
+                provider=provider_name,
+                status="error",
+                duration_seconds=perf_counter() - provider_started_at,
+                articles=0,
+            )
+            raise
+
     # Run all scrapers in parallel with from_date
     # return_exceptions=True ensures one failure doesn't crash others
     results = await asyncio.gather(
-        scrape_gnews(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
-        scrape_serpapi(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
-        scrape_configurable_sources(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
-        scrape_rss(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
+        _run_provider(
+            "gnews",
+            scrape_gnews(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
+        ),
+        _run_provider(
+            "serpapi",
+            scrape_serpapi(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
+        ),
+        _run_provider(
+            "configurable",
+            scrape_configurable_sources(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
+        ),
+        _run_provider(
+            "rss",
+            scrape_rss(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
+        ),
         return_exceptions=True
     )
 
@@ -123,6 +168,7 @@ async def fetch_all_mentions(
             unique_mentions.append(mention)
 
     duplicates_removed = len(all_mentions) - len(unique_mentions)
+    observe_duplicates_removed(stage="url", count=duplicates_removed)
     _run_log(
         scrape_run_id,
         f"Scraping complete: {len(unique_mentions)} unique mentions ({duplicates_removed} duplicates removed)"

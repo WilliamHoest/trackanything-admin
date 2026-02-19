@@ -68,6 +68,7 @@ async def scrape_gnews(
                 client,
                 url,
                 rate_profile="api",
+                metrics_provider="gnews",
                 headers=headers,
             )
             data = response.json()

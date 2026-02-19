@@ -118,6 +118,7 @@ async def search_single_keyword(
                 client,
                 search_url,
                 rate_profile="html",
+                metrics_provider="configurable",
                 headers=headers,
             )
             soup = BeautifulSoup(response.text, "lxml")

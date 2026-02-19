@@ -1,8 +1,10 @@
 from fastapi import FastAPI
+from fastapi import Response
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.api_v1 import api_router
 from app.core.config import settings
 from app.core.logging_config import setup_logging
+from app.services.scraping.core.metrics import render_metrics, render_scraping_metrics
 import logging
 
 # Setup logging
@@ -42,6 +44,16 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "version": "3.0.0", "database": "Supabase REST API"}
+
+@app.get("/metrics")
+async def metrics():
+    payload, content_type = render_metrics()
+    return Response(content=payload, media_type=content_type)
+
+@app.get("/metrics/scraping")
+async def scraping_metrics():
+    payload, content_type = render_scraping_metrics()
+    return Response(content=payload, media_type=content_type)
 
 @app.get("/dev-info")
 async def dev_info():

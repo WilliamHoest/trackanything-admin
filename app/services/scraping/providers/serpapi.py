@@ -2,12 +2,14 @@ from typing import List, Dict, Optional
 from datetime import datetime, timezone
 import asyncio
 import logging
+from time import perf_counter
 from dateutil import parser as dateparser
 from serpapi import GoogleSearch
 
 from app.core.config import settings
 from app.services.scraping.core.text_processing import clean_keywords
 from app.services.scraping.core.domain_utils import get_etld_plus_one
+from app.services.scraping.core.metrics import observe_http_error, observe_http_request
 from app.services.scraping.core.rate_limit import get_domain_limiter
 
 logger = logging.getLogger("scraping")
@@ -100,8 +102,16 @@ async def scrape_serpapi(
         # Apply per-domain API rate control before outbound SerpAPI request.
         etld1 = get_etld_plus_one("https://serpapi.com")
         limiter = get_domain_limiter(etld1, profile="api")
+        request_started_at = perf_counter()
         async with limiter:
             results = await asyncio.to_thread(run_search)
+        status_code = "200" if "error" not in results else "api_error"
+        observe_http_request(
+            provider="serpapi",
+            domain=etld1,
+            status_code=status_code,
+            duration_seconds=perf_counter() - request_started_at,
+        )
 
         if "error" in results:
             _log(scrape_run_id, f"SerpAPI error: {results['error']}", logging.ERROR)
@@ -153,5 +163,10 @@ async def scrape_serpapi(
         return mentions
 
     except Exception as e:
+        observe_http_error(
+            provider="serpapi",
+            domain=get_etld_plus_one("https://serpapi.com"),
+            error_type=type(e).__name__,
+        )
         _log(scrape_run_id, f"Scraping failed: {e}", logging.ERROR)
         return []

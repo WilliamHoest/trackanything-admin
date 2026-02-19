@@ -1,4 +1,5 @@
 import httpx
+from time import perf_counter
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -8,6 +9,7 @@ from tenacity import (
 from fake_useragent import UserAgent
 from app.services.scraping.core.domain_utils import get_etld_plus_one
 from app.services.scraping.core.rate_limit import get_domain_limiter
+from app.services.scraping.core.metrics import observe_http_error, observe_http_request
 
 # === Configuration ===
 TIMEOUT_SECONDS = 6
@@ -84,6 +86,7 @@ async def fetch_with_retry(
     client: httpx.AsyncClient,
     url: str,
     rate_profile: str = "html",
+    metrics_provider: str = "unknown",
     **kwargs
 ) -> httpx.Response:
     """
@@ -98,7 +101,36 @@ async def fetch_with_retry(
     etld1 = get_etld_plus_one(url)
     limiter = get_domain_limiter(etld1, rate_profile)
 
-    async with limiter:
-        response = await client.get(url, **kwargs)
-    response.raise_for_status()  # Raises HTTPStatusError for 4xx/5xx
-    return response
+    started_at = perf_counter()
+    try:
+        async with limiter:
+            response = await client.get(url, **kwargs)
+        response.raise_for_status()  # Raises HTTPStatusError for 4xx/5xx
+        observe_http_request(
+            provider=metrics_provider,
+            domain=etld1,
+            status_code=str(response.status_code),
+            duration_seconds=perf_counter() - started_at,
+        )
+        return response
+    except httpx.HTTPStatusError as exc:
+        status_code = str(exc.response.status_code) if exc.response is not None else "http_status_error"
+        observe_http_request(
+            provider=metrics_provider,
+            domain=etld1,
+            status_code=status_code,
+            duration_seconds=perf_counter() - started_at,
+        )
+        observe_http_error(
+            provider=metrics_provider,
+            domain=etld1,
+            error_type=f"http_{status_code}",
+        )
+        raise
+    except httpx.RequestError as exc:
+        observe_http_error(
+            provider=metrics_provider,
+            domain=etld1,
+            error_type=type(exc).__name__,
+        )
+        raise

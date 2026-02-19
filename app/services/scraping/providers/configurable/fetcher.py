@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 import httpx
 
 from app.services.scraping.core.http_client import fetch_with_retry
+from app.services.scraping.core.metrics import observe_extraction, observe_playwright_fallback
 from app.services.scraping.core.text_processing import (
     compile_keyword_patterns,
     get_platform_from_url,
@@ -121,6 +122,7 @@ async def _scrape_article_content(
             client,
             url,
             rate_profile="html",
+            metrics_provider="configurable",
             headers=headers,
         )
     except httpx.HTTPStatusError as e:
@@ -130,6 +132,7 @@ async def _scrape_article_content(
         raise
 
     final_url = normalize_url(str(response.url)) if response.url else normalize_url(url)
+    metrics_domain = _normalize_domain(urlparse(final_url).netloc) or domain or "unknown"
     if final_url != normalize_url(url):
         _log(scrape_run_id, f"Redirected article URL: {url} -> {final_url}", level=logging.DEBUG)
 
@@ -142,6 +145,7 @@ async def _scrape_article_content(
     )
 
     if not _has_meaningful_content(content):
+        observe_playwright_fallback(metrics_domain, "triggered")
         _log(
             scrape_run_id,
             f"Standard fetch failed (len={len(content)}). Triggering Playwright fallback for {final_url}...",
@@ -177,14 +181,22 @@ async def _scrape_article_content(
                     f"Playwright fallback succeeded for {final_url} (len={len(content)})",
                     logging.INFO,
                 )
+                observe_playwright_fallback(metrics_domain, "success")
             else:
                 _log(
                     scrape_run_id,
                     f"Playwright fallback returned low/empty content for {final_url} (len={len(pw_content)})",
                     logging.DEBUG,
                 )
+                observe_playwright_fallback(metrics_domain, "low_content")
         else:
             _log(scrape_run_id, f"Playwright fallback failed for {final_url}", logging.DEBUG)
+            observe_playwright_fallback(metrics_domain, "failed")
+
+    if _has_meaningful_content(content):
+        observe_extraction("configurable", metrics_domain, "success", len(content))
+    else:
+        observe_extraction("configurable", metrics_domain, "empty_content", 0)
 
     text_to_search = f"{title} {content}"
     if keyword_matches_text(patterns, text_to_search):
