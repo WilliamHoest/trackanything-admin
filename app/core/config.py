@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     port: int = 8000
     debug: bool = True
     allowed_origins: str = "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173"
+    scraping_rate_html_rps: float = 1.5
+    scraping_rate_api_rps: float = 3.0
+    scraping_rate_rss_rps: float = 2.0
     
     @property
     def allowed_origins_list(self) -> List[str]:

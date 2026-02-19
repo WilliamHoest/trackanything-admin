@@ -117,7 +117,12 @@ async def _scrape_article_content(
     headers = get_default_headers()
 
     try:
-        response = await fetch_with_retry(client, url, headers=headers)
+        response = await fetch_with_retry(
+            client,
+            url,
+            rate_profile="html",
+            headers=headers,
+        )
     except httpx.HTTPStatusError as e:
         if e.response is not None and e.response.status_code == 402:
             _log(scrape_run_id, f"Paywall blocked (402) for {url}")

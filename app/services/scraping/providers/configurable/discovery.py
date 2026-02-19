@@ -114,7 +114,12 @@ async def search_single_keyword(
         try:
             search_url = search_pattern.replace("{keyword}", quote_plus(keyword))
             headers = {"User-Agent": get_random_user_agent()}
-            response = await fetch_with_retry(client, search_url, headers=headers)
+            response = await fetch_with_retry(
+                client,
+                search_url,
+                rate_profile="html",
+                headers=headers,
+            )
             soup = BeautifulSoup(response.text, "lxml")
 
             for link in soup.select("a[href]"):

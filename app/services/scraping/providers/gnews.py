@@ -64,7 +64,12 @@ async def scrape_gnews(
         async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
             from app.services.scraping.core.http_client import get_default_headers
             headers = get_default_headers()
-            response = await fetch_with_retry(client, url, headers=headers)
+            response = await fetch_with_retry(
+                client,
+                url,
+                rate_profile="api",
+                headers=headers,
+            )
             data = response.json()
 
             articles_data = data.get("articles", [])

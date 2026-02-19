@@ -4,6 +4,9 @@ from typing import List, Dict, Optional
 from datetime import datetime, timezone, timedelta
 import logging
 
+from app.services.scraping.core.domain_utils import get_etld_plus_one
+from app.services.scraping.core.rate_limit import get_domain_limiter
+
 logger = logging.getLogger("scraping")
 
 
@@ -48,8 +51,12 @@ async def scrape_rss(
         try:
             url = base_url.format(keyword.replace(" ", "+"))
 
-            # feedparser er blokerende, så vi kører det i en thread
-            feed = await asyncio.to_thread(feedparser.parse, url)
+            # Apply per-domain RSS rate control before outbound request.
+            etld1 = get_etld_plus_one(url)
+            limiter = get_domain_limiter(etld1, profile="rss")
+            async with limiter:
+                # feedparser is blocking, so we run it in a thread.
+                feed = await asyncio.to_thread(feedparser.parse, url)
 
             if not hasattr(feed, 'entries'):
                 continue

@@ -7,6 +7,8 @@ from serpapi import GoogleSearch
 
 from app.core.config import settings
 from app.services.scraping.core.text_processing import clean_keywords
+from app.services.scraping.core.domain_utils import get_etld_plus_one
+from app.services.scraping.core.rate_limit import get_domain_limiter
 
 logger = logging.getLogger("scraping")
 
@@ -95,7 +97,11 @@ async def scrape_serpapi(
             search = GoogleSearch(params)
             return search.get_dict()
 
-        results = await asyncio.to_thread(run_search)
+        # Apply per-domain API rate control before outbound SerpAPI request.
+        etld1 = get_etld_plus_one("https://serpapi.com")
+        limiter = get_domain_limiter(etld1, profile="api")
+        async with limiter:
+            results = await asyncio.to_thread(run_search)
 
         if "error" in results:
             _log(scrape_run_id, f"SerpAPI error: {results['error']}", logging.ERROR)

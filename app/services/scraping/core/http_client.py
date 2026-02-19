@@ -6,6 +6,8 @@ from tenacity import (
     retry_if_exception,
 )
 from fake_useragent import UserAgent
+from app.services.scraping.core.domain_utils import get_etld_plus_one
+from app.services.scraping.core.rate_limit import get_domain_limiter
 
 # === Configuration ===
 TIMEOUT_SECONDS = 6
@@ -81,6 +83,7 @@ def _is_retryable_error(exception: Exception) -> bool:
 async def fetch_with_retry(
     client: httpx.AsyncClient,
     url: str,
+    rate_profile: str = "html",
     **kwargs
 ) -> httpx.Response:
     """
@@ -92,6 +95,10 @@ async def fetch_with_retry(
     if 'follow_redirects' not in kwargs:
         kwargs['follow_redirects'] = True
 
-    response = await client.get(url, **kwargs)
+    etld1 = get_etld_plus_one(url)
+    limiter = get_domain_limiter(etld1, rate_profile)
+
+    async with limiter:
+        response = await client.get(url, **kwargs)
     response.raise_for_status()  # Raises HTTPStatusError for 4xx/5xx
     return response
