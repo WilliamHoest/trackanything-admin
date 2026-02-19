@@ -3,7 +3,6 @@ from urllib.parse import urlparse, urlunparse
 from typing import List
 
 _QUOTE_CHARS = "\"'“”„‟«»`´"
-_QUOTED_PHRASE_PATTERN = re.compile(r'["“”„‟«»]([^"“”„‟«»]+)["“”„‟«»]')
 
 
 def _normalize_quotes(text: str) -> str:
@@ -48,81 +47,67 @@ def clean_keywords(keywords: List[str]) -> List[str]:
 
 def _extract_keyword_terms(keyword: str) -> List[str]:
     """
-    Split a keyword into searchable terms.
-    Example: '"Novo Nordisk" Wegovy' -> ['Novo Nordisk', 'Wegovy']
+    Split keyword text into plain terms only (no phrase support).
     """
-    normalized = _normalize_quotes(keyword).strip()
-    if not normalized:
+    cleaned = sanitize_search_input(keyword)
+    if not cleaned:
         return []
 
-    terms: List[str] = []
-
-    # Keep quoted phrases intact
-    for phrase in _QUOTED_PHRASE_PATTERN.findall(normalized):
-        phrase = " ".join(phrase.split()).strip(_QUOTE_CHARS + " ")
-        if phrase:
-            terms.append(phrase)
-
-    # Add remaining unquoted segments as phrase terms
-    remainder = _QUOTED_PHRASE_PATTERN.sub(" ", normalized)
-    phrase = " ".join(remainder.split()).strip(_QUOTE_CHARS + " ")
-    if phrase:
-        terms.append(phrase)
-
-    # Deduplicate while preserving order
     deduped: List[str] = []
     seen = set()
-    for term in terms:
-        key = term.casefold()
-        if key in seen:
+    for term in cleaned.split():
+        normalized = term.casefold()
+        # Ignore 1-char tokens to avoid noisy matches (e.g., "x")
+        if len(normalized) < 2:
             continue
-        seen.add(key)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
         deduped.append(term)
-
-    if deduped:
-        return deduped
-
-    fallback = normalized.strip(_QUOTE_CHARS + " ")
-    return [fallback] if fallback else []
+    return deduped
 
 
-def _term_to_regex(term: str) -> str:
-    """
-    Build a regex fragment for a term/phrase with flexible whitespace and
-    sane word boundaries when term starts/ends with word chars.
-    """
+def _term_to_regex(term: str) -> re.Pattern:
     escaped = re.escape(term)
-    # Use optional whitespace to match both "Space x" and "SpaceX".
-    escaped = escaped.replace(r"\ ", r"\s*")
-
-    prefix = r"(?<!\w)" if term and term[0].isalnum() else ""
-    suffix = r"(?!\w)" if term and term[-1].isalnum() else ""
-    return f"{prefix}{escaped}{suffix}"
+    pattern = rf"(?<!\w){escaped}(?!\w)"
+    return re.compile(pattern, re.IGNORECASE)
 
 
-def compile_keyword_patterns(keywords: List[str]) -> List[re.Pattern]:
+def compile_keyword_patterns(keywords: List[str]) -> List[List[re.Pattern]]:
     """
-    Compile regex patterns where all keyword terms must be present.
-    Handles quoted phrases robustly (e.g. '"Novo Nordisk" Wegovy').
+    Compile keyword groups as term regex lists.
+    Each input keyword becomes one term-group.
     """
-    patterns = []
+    groups: List[List[re.Pattern]] = []
     for keyword in keywords:
         terms = _extract_keyword_terms(keyword)
         if not terms:
             continue
+        groups.append([_term_to_regex(term) for term in terms])
+    return groups
 
-        # Require each term/phrase to exist in the text, in any order.
-        lookaheads = "".join(f"(?=.*{_term_to_regex(term)})" for term in terms)
-        pattern = re.compile(lookaheads + r".*", re.IGNORECASE | re.DOTALL)
-        patterns.append(pattern)
-    return patterns
 
-def keyword_matches_text(patterns: List[re.Pattern], text: str) -> bool:
-    """Check if any keyword pattern matches the text"""
-    for pattern in patterns:
-        if pattern.search(text):
-            return True
-    return False
+def keyword_match_score(patterns: List[List[re.Pattern]], text: str) -> int:
+    """
+    Return max number of matched terms within any keyword-group.
+    """
+    if not text:
+        return 0
+
+    best_score = 0
+    for group in patterns:
+        score = sum(1 for term_pattern in group if term_pattern.search(text))
+        if score > best_score:
+            best_score = score
+    return best_score
+
+
+def keyword_matches_text(
+    patterns: List[List[re.Pattern]],
+    text: str,
+    min_terms: int = 1,
+) -> bool:
+    return keyword_match_score(patterns, text) >= max(1, int(min_terms))
 
 def normalize_url(url: str) -> str:
     """Normalize URL by removing query/fragment and canonicalizing host/path."""

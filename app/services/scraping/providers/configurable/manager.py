@@ -23,6 +23,9 @@ from .config import (
 from .discovery import _is_candidate_article_url, search_single_keyword
 from .fetcher import _scrape_article_content
 
+PRIMARY_MIN_KEYWORD_MATCHES = 2
+FALLBACK_MIN_KEYWORD_MATCHES = 1
+
 
 async def scrape_configurable_sources(
     keywords: List[str],
@@ -158,6 +161,8 @@ async def scrape_configurable_sources(
                             from_date=from_date,
                             config_cache=config_cache,
                             blind_domain_counts=blind_domain_counts,
+                            min_keyword_matches=PRIMARY_MIN_KEYWORD_MATCHES,
+                            allow_partial_matches=True,
                             scrape_run_id=scrape_run_id,
                         )
                         if article is None:
@@ -237,7 +242,36 @@ async def scrape_configurable_sources(
         _log(scrape_run_id, f"Extracting {len(extraction_tasks)} articles in parallel...")
         extraction_results = await asyncio.gather(*extraction_tasks, return_exceptions=True)
 
-    articles = [a for a in extraction_results if a and not isinstance(a, Exception)]
+    extracted_articles = [a for a in extraction_results if a and not isinstance(a, Exception)]
+    strong_matches = [
+        article
+        for article in extracted_articles
+        if int(article.get("_term_match_count", 0)) >= PRIMARY_MIN_KEYWORD_MATCHES
+    ]
+
+    if strong_matches:
+        articles = strong_matches
+    else:
+        fallback_matches = [
+            article
+            for article in extracted_articles
+            if int(article.get("_term_match_count", 0)) >= FALLBACK_MIN_KEYWORD_MATCHES
+        ]
+        if fallback_matches:
+            _log(
+                scrape_run_id,
+                (
+                    "No matches met primary threshold "
+                    f"(term_matches >= {PRIMARY_MIN_KEYWORD_MATCHES}). "
+                    f"Falling back to term_matches >= {FALLBACK_MIN_KEYWORD_MATCHES} "
+                    f"and keeping {len(fallback_matches)} partial matches."
+                ),
+                logging.WARNING,
+            )
+        articles = fallback_matches
+
+    for article in articles:
+        article.pop("_term_match_count", None)
 
     if domain_failure_counts:
         noisy_domains = sorted(domain_failure_counts.items(), key=lambda item: item[1], reverse=True)

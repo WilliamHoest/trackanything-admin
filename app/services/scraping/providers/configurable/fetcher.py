@@ -12,7 +12,7 @@ from app.services.scraping.core.metrics import observe_extraction, observe_playw
 from app.services.scraping.core.text_processing import (
     compile_keyword_patterns,
     get_platform_from_url,
-    keyword_matches_text,
+    keyword_match_score,
     normalize_url,
 )
 from .config import _get_config_for_domain, _log, _normalize_domain
@@ -95,6 +95,8 @@ async def _scrape_article_content(
     from_date: Optional[datetime] = None,
     config_cache: Optional[Dict[str, Optional[Dict]]] = None,
     blind_domain_counts: Optional[Dict[str, int]] = None,
+    min_keyword_matches: int = 2,
+    allow_partial_matches: bool = False,
     scrape_run_id: Optional[str] = None,
 ) -> Optional[Dict]:
     """Scrape a single article URL and return a mention payload if keyword-matched."""
@@ -199,7 +201,11 @@ async def _scrape_article_content(
         observe_extraction("configurable", metrics_domain, "empty_content", 0)
 
     text_to_search = f"{title} {content}"
-    if keyword_matches_text(patterns, text_to_search):
+    term_match_score = keyword_match_score(patterns, text_to_search)
+    passed_threshold = term_match_score >= max(1, int(min_keyword_matches))
+    keep_partial = allow_partial_matches and term_match_score > 0
+
+    if passed_threshold or keep_partial:
         if config and config.get("domain"):
             platform = config["domain"]
         else:
@@ -236,14 +242,28 @@ async def _scrape_article_content(
             "published_parsed": published_parsed,
             "platform": platform,
             "content_teaser": content[:500] if content else "",
+            "_term_match_count": term_match_score,
         }
 
         config_status = "config" if config else "generic"
-        _log(
-            scrape_run_id,
-            f"Match ({platform}, {config_status}, extracted_via={extracted_via}): {title}",
-            level=logging.DEBUG,
-        )
+        if passed_threshold:
+            _log(
+                scrape_run_id,
+                (
+                    f"Match ({platform}, {config_status}, extracted_via={extracted_via}, "
+                    f"term_matches={term_match_score}): {title}"
+                ),
+                level=logging.DEBUG,
+            )
+        else:
+            _log(
+                scrape_run_id,
+                (
+                    f"Partial match retained for fallback "
+                    f"({platform}, term_matches={term_match_score}): {title}"
+                ),
+                level=logging.DEBUG,
+            )
         return article
 
     if not title and not content:
@@ -251,7 +271,14 @@ async def _scrape_article_content(
         if blind_domain and blind_domain_counts is not None:
             blind_domain_counts[blind_domain] = blind_domain_counts.get(blind_domain, 0) + 1
 
-    _log(scrape_run_id, f"Keyword match failed for {final_url}", level=logging.DEBUG)
+    _log(
+        scrape_run_id,
+        (
+            f"Keyword match failed for {final_url} "
+            f"(term_matches={term_match_score}, required={min_keyword_matches})"
+        ),
+        level=logging.DEBUG,
+    )
     _log(
         scrape_run_id,
         f"  Title: {len(title)} chars, Content: {len(content)} chars",
