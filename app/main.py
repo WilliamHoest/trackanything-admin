@@ -1,10 +1,11 @@
-from fastapi import FastAPI
-from fastapi import Response
+from fastapi import FastAPI, Response
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.api_v1 import api_router
 from app.core.config import settings
 from app.core.logging_config import setup_logging
 from app.services.scraping.core.metrics import render_metrics, render_scraping_metrics
+from app.api.dashboard_html import DASHBOARD_HTML
 import logging
 
 # Setup logging
@@ -54,6 +55,10 @@ async def metrics():
 async def scraping_metrics():
     payload, content_type = render_scraping_metrics()
     return Response(content=payload, media_type=content_type)
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard():
+    return DASHBOARD_HTML
 
 @app.get("/dev-info")
 async def dev_info():
