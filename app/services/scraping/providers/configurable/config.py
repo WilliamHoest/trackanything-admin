@@ -3,6 +3,7 @@ from urllib.parse import urlparse
 import logging
 
 from app.crud.supabase_crud import SupabaseCRUD
+from app.core.config import settings
 
 logger = logging.getLogger("scraping")
 
@@ -12,6 +13,8 @@ EXTRACTION_CONCURRENCY = 20
 PER_DOMAIN_EXTRACTION_CONCURRENCY = 3
 DOMAIN_CIRCUIT_BREAKER_THRESHOLD = 5
 PLAYWRIGHT_CONCURRENCY_LIMIT = 3
+MAX_TOTAL_URLS_PER_RUN = max(1, settings.scraping_max_total_urls_per_run)
+BLIND_DOMAIN_CIRCUIT_BREAKER_THRESHOLD = max(1, settings.scraping_blind_domain_circuit_threshold)
 
 
 def _log(scrape_run_id: Optional[str], message: str, level: int = logging.INFO) -> None:

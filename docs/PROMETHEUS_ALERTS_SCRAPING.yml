@@ -1,0 +1,63 @@
+groups:
+  - name: scraping_alerts
+    rules:
+      - alert: ScrapingRunP95TooSlow
+        expr: histogram_quantile(0.95, sum(rate(scrape_run_duration_seconds_bucket[15m])) by (le, scope)) > 300
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Scraping p95 runtime er for høj"
+          description: "p95 runtime for scope {{ $labels.scope }} er over 300s de sidste 15 minutter."
+
+      - alert: ScrapingHttpErrorRateHigh
+        expr: sum(rate(scrape_http_errors_total[5m])) by (provider, domain) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Høj scraping HTTP-fejlrate"
+          description: "Provider {{ $labels.provider }} mod {{ $labels.domain }} har >0.5 fejl/sek i 10 min."
+
+      - alert: ScrapingExtractionSuccessRateLow
+        expr: |
+          (
+            sum(rate(scrape_extractions_total{result="success"}[15m])) by (provider, domain)
+            /
+            clamp_min(sum(rate(scrape_extractions_total[15m])) by (provider, domain), 0.001)
+          ) < 0.20
+          and
+          sum(rate(scrape_extractions_total[15m])) by (provider, domain) > 0.1
+        for: 20m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Lav extraction success-rate"
+          description: "Extraction success-rate for {{ $labels.provider }}/{{ $labels.domain }} er under 20%."
+
+      - alert: ScrapingPlaywrightFallbackFailures
+        expr: sum(rate(scrape_playwright_fallback_total{result="failed"}[15m])) by (domain) > 0.2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Playwright fallback fejler hyppigt"
+          description: "Domain {{ $labels.domain }} har >0.2 failed fallback/sek over 15 min."
+
+      - alert: ScrapingBlindDomainCircuitOpened
+        expr: increase(scrape_guardrail_events_total{guardrail="blind_domain_circuit",reason="open"}[15m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Blind-domain circuit breaker åbnet"
+          description: "Mindst ét domæne er markeret som blindt (gentagne 0-char extractions)."
+
+      - alert: ScrapingUrlBudgetClipping
+        expr: increase(scrape_guardrail_events_total{guardrail="max_total_urls_per_run",reason="skip"}[30m]) > 0
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "Global URL-budget bliver ramt"
+          description: "Configurable extraction har skippet URLs pga. max_total_urls_per_run."

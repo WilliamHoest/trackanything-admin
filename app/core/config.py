@@ -21,6 +21,16 @@ class Settings(BaseSettings):
     scraping_rate_html_rps: float = 1.5
     scraping_rate_api_rps: float = 3.0
     scraping_rate_rss_rps: float = 2.0
+    scraping_provider_gnews_enabled: bool = True
+    scraping_provider_serpapi_enabled: bool = True
+    scraping_provider_configurable_enabled: bool = True
+    scraping_provider_rss_enabled: bool = True
+    scraping_max_keywords_per_run: int = 50
+    scraping_max_total_urls_per_run: int = 200
+    scraping_blind_domain_circuit_threshold: int = 8
+    scraping_historical_dedup_enabled: bool = True
+    scraping_historical_dedup_days: int = 3
+    scraping_historical_dedup_limit: int = 1000
     scraping_fuzzy_dedup_enabled: bool = True
     scraping_fuzzy_dedup_threshold: int = 92
     scraping_fuzzy_dedup_day_window: int = 2

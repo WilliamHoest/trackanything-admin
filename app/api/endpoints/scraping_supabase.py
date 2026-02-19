@@ -16,8 +16,9 @@ from app.core.logging_config import (
 from app.core.supabase_db import get_supabase_crud
 from app.crud.supabase_crud import SupabaseCRUD
 from app.services.scraping.orchestrator import fetch_all_mentions, fetch_and_filter_mentions
+from app.services.scraping.core.deduplication import filter_mentions_against_historical
 from app.services.scraping.core.text_processing import sanitize_search_input
-from app.services.scraping.core.metrics import observe_scrape_run
+from app.services.scraping.core.metrics import observe_duplicates_removed, observe_scrape_run
 import logging
 
 router = APIRouter()
@@ -198,6 +199,29 @@ async def scrape_brand(
             from_date=from_date,
             scrape_run_id=scrape_run_id
         )
+
+        if settings.scraping_historical_dedup_enabled and mentions:
+            historical_days = max(1, int(settings.scraping_historical_dedup_days))
+            historical_limit = max(1, int(settings.scraping_historical_dedup_limit))
+            recent_mentions = await crud.get_recent_mentions_for_brand(
+                brand_id=brand_id,
+                days_back=historical_days,
+                limit=historical_limit,
+            )
+
+            if recent_mentions:
+                mentions, historical_duplicates_removed = filter_mentions_against_historical(
+                    mentions,
+                    recent_mentions,
+                    threshold=settings.scraping_fuzzy_dedup_threshold,
+                    day_window=settings.scraping_fuzzy_dedup_day_window,
+                )
+                observe_duplicates_removed(stage="historical_fuzzy", count=historical_duplicates_removed)
+                if historical_duplicates_removed > 0:
+                    scraping_logger.info(
+                        f"[run:{scrape_run_id}] Historical near-dedupe removed "
+                        f"{historical_duplicates_removed} mentions for brand '{brand['name']}'"
+                    )
 
         if not mentions:
             run_status = "no_mentions"

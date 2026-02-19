@@ -8,12 +8,14 @@ import httpx
 
 from app.crud.supabase_crud import SupabaseCRUD
 from app.services.scraping.core.http_client import TIMEOUT_SECONDS
-from app.services.scraping.core.metrics import observe_extraction
+from app.services.scraping.core.metrics import observe_extraction, observe_guardrail_event
 from .config import (
+    BLIND_DOMAIN_CIRCUIT_BREAKER_THRESHOLD,
     DEFAULT_MAX_ARTICLES_PER_SOURCE,
     DISCOVERY_CONCURRENCY,
     DOMAIN_CIRCUIT_BREAKER_THRESHOLD,
     EXTRACTION_CONCURRENCY,
+    MAX_TOTAL_URLS_PER_RUN,
     PER_DOMAIN_EXTRACTION_CONCURRENCY,
     _log,
     _normalize_domain,
@@ -31,6 +33,24 @@ async def scrape_configurable_sources(
     """Universal scraper that works with all configured sources."""
     if not keywords:
         return []
+
+    capped_per_source = max(1, min(int(max_articles_per_source), DEFAULT_MAX_ARTICLES_PER_SOURCE))
+    if capped_per_source < max_articles_per_source:
+        dropped_per_source = int(max_articles_per_source) - capped_per_source
+        _log(
+            scrape_run_id,
+            (
+                f"Per-source extraction budget capped at {capped_per_source} "
+                f"(requested {max_articles_per_source}, dropped {dropped_per_source} per source)"
+            ),
+            logging.WARNING,
+        )
+        observe_guardrail_event(
+            "max_articles_per_source",
+            "configurable",
+            "cap",
+            count=dropped_per_source,
+        )
 
     _log(scrape_run_id, "Starting universal discovery...")
 
@@ -60,10 +80,12 @@ async def scrape_configurable_sources(
 
     discovered_urls: Dict[str, set[str]] = {}
     blind_domain_counts: Dict[str, int] = {}
+    open_blind_domains: set[str] = set()
     domain_failure_counts: Dict[str, int] = {}
     open_circuit_domains: set[str] = set()
     domain_semaphores: Dict[str, asyncio.Semaphore] = {}
     domain_failure_lock = asyncio.Lock()
+    blind_domain_lock = asyncio.Lock()
 
     limits = httpx.Limits(max_keepalive_connections=50, max_connections=100)
     async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS, limits=limits) as client:
@@ -104,6 +126,12 @@ async def scrape_configurable_sources(
                 observe_extraction("configurable", domain, "circuit_open_skip", 0)
                 return None
 
+            if domain in open_blind_domains:
+                _log(scrape_run_id, f"Skipping {url} (blind circuit open for {domain})", logging.DEBUG)
+                observe_extraction("configurable", domain, "blind_circuit_skip", 0)
+                observe_guardrail_event("blind_domain_circuit", "configurable", "skip")
+                return None
+
             domain_sem = domain_semaphores.setdefault(
                 domain,
                 asyncio.Semaphore(PER_DOMAIN_EXTRACTION_CONCURRENCY),
@@ -116,8 +144,14 @@ async def scrape_configurable_sources(
                         observe_extraction("configurable", domain, "circuit_open_skip", 0)
                         return None
 
+                    if domain in open_blind_domains:
+                        _log(scrape_run_id, f"Skipping {url} (blind circuit opened for {domain})", logging.DEBUG)
+                        observe_extraction("configurable", domain, "blind_circuit_skip", 0)
+                        observe_guardrail_event("blind_domain_circuit", "configurable", "skip")
+                        return None
+
                     try:
-                        return await _scrape_article_content(
+                        article = await _scrape_article_content(
                             client,
                             url,
                             keywords,
@@ -126,6 +160,21 @@ async def scrape_configurable_sources(
                             blind_domain_counts=blind_domain_counts,
                             scrape_run_id=scrape_run_id,
                         )
+                        if article is None:
+                            async with blind_domain_lock:
+                                blind_count = blind_domain_counts.get(domain, 0)
+                                if blind_count >= BLIND_DOMAIN_CIRCUIT_BREAKER_THRESHOLD and domain not in open_blind_domains:
+                                    open_blind_domains.add(domain)
+                                    _log(
+                                        scrape_run_id,
+                                        (
+                                            f"Blind circuit opened for {domain} after "
+                                            f"{blind_count} empty/0-char extractions"
+                                        ),
+                                        logging.WARNING,
+                                    )
+                                    observe_guardrail_event("blind_domain_circuit", "configurable", "open")
+                        return article
                     except Exception as e:
                         async with domain_failure_lock:
                             failures = domain_failure_counts.get(domain, 0) + 1
@@ -148,19 +197,41 @@ async def scrape_configurable_sources(
 
         extraction_tasks = []
         skipped_non_article_urls = 0
+        skipped_url_budget = 0
+        queued_urls = 0
         for domain, urls in discovered_urls.items():
-            limited_urls = list(urls)[:max_articles_per_source]
+            limited_urls = list(urls)[:capped_per_source]
             for url in limited_urls:
                 if not _is_candidate_article_url(url, domain):
                     skipped_non_article_urls += 1
                     continue
+                if queued_urls >= MAX_TOTAL_URLS_PER_RUN:
+                    skipped_url_budget += 1
+                    continue
                 extraction_tasks.append(extract_single_article(url))
+                queued_urls += 1
 
         if skipped_non_article_urls:
             _log(
                 scrape_run_id,
                 f"Skipped {skipped_non_article_urls} non-article URLs before extraction",
                 logging.DEBUG,
+            )
+
+        if skipped_url_budget:
+            _log(
+                scrape_run_id,
+                (
+                    f"Skipped {skipped_url_budget} URLs due to global extraction budget "
+                    f"({MAX_TOTAL_URLS_PER_RUN} per run)"
+                ),
+                logging.WARNING,
+            )
+            observe_guardrail_event(
+                "max_total_urls_per_run",
+                "configurable",
+                "skip",
+                count=skipped_url_budget,
             )
 
         _log(scrape_run_id, f"Extracting {len(extraction_tasks)} articles in parallel...")
@@ -177,9 +248,17 @@ async def scrape_configurable_sources(
         joined = ", ".join(sorted(open_circuit_domains))
         _log(scrape_run_id, f"Circuit breaker opened for domains: {joined}", logging.WARNING)
 
+    if open_blind_domains:
+        joined = ", ".join(sorted(open_blind_domains))
+        _log(scrape_run_id, f"Blind circuit breaker opened for domains: {joined}", logging.WARNING)
+
     if blind_domain_counts:
         suspected_js_domains = sorted(
-            ((domain, count) for domain, count in blind_domain_counts.items() if count >= 3),
+            (
+                (domain, count)
+                for domain, count in blind_domain_counts.items()
+                if count >= BLIND_DOMAIN_CIRCUIT_BREAKER_THRESHOLD
+            ),
             key=lambda item: item[1],
             reverse=True,
         )

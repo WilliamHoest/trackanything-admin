@@ -4,12 +4,21 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
-from rapidfuzz import fuzz
+try:
+    from rapidfuzz import fuzz
+except Exception:  # pragma: no cover
+    fuzz = None
 
 from app.services.scraping.core.domain_utils import get_etld_plus_one
 
 
 _TITLE_WORD_PATTERN = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+
+
+def _fuzzy_score(left: str, right: str) -> float:
+    if fuzz is None:
+        return 100.0 if left == right else 0.0
+    return float(fuzz.token_set_ratio(left, right))
 
 
 def _to_utc_datetime(value: object) -> Optional[datetime]:
@@ -57,7 +66,7 @@ def _title_signature(normalized_title: str) -> str:
         return ""
     tokens = normalized_title.split()
     # Fast blocking key to reduce comparisons.
-    return " ".join(tokens[:6])
+    return " ".join(tokens[:5])
 
 
 def _comparison_text(mention: Dict) -> str:
@@ -127,7 +136,7 @@ def near_deduplicate_mentions(
             if mention_dt and candidate_dt and abs(mention_dt - candidate_dt) > day_delta:
                 continue
 
-            score = fuzz.token_set_ratio(normalized_text, candidate_text)
+            score = _fuzzy_score(normalized_text, candidate_text)
             if score >= safe_threshold:
                 is_duplicate = True
                 break
@@ -140,3 +149,79 @@ def near_deduplicate_mentions(
         buckets.setdefault(bucket_key, []).append(len(unique_mentions) - 1)
 
     return unique_mentions, removed
+
+
+def filter_mentions_against_historical(
+    new_mentions: List[Dict],
+    historical_mentions: List[Dict],
+    threshold: int = 92,
+    day_window: int = 2,
+) -> Tuple[List[Dict], int]:
+    """
+    Filter new mentions against recent historical mentions for the same brand.
+    Returns (filtered_mentions, removed_count).
+
+    Uses same blocking model as near_deduplicate_mentions:
+    - eTLD+1
+    - title signature
+    - optional published date window when both dates exist
+    """
+    if not new_mentions or not historical_mentions:
+        return new_mentions, 0
+
+    safe_threshold = max(1, min(int(threshold), 100))
+    safe_day_window = max(0, int(day_window))
+    day_delta = timedelta(days=safe_day_window)
+
+    historical_buckets: Dict[Tuple[str, str], List[Tuple[str, Optional[datetime]]]] = {}
+    for mention in historical_mentions:
+        text = _normalize_title(_comparison_text(mention))
+        if not text:
+            continue
+        domain = get_etld_plus_one(
+            mention.get("link")
+            or mention.get("platform")
+            or ""
+        )
+        signature = _title_signature(text)
+        key = (domain, signature)
+        historical_buckets.setdefault(key, []).append((text, _mention_published_at(mention)))
+
+    if not historical_buckets:
+        return new_mentions, 0
+
+    filtered: List[Dict] = []
+    removed = 0
+
+    for mention in new_mentions:
+        text = _normalize_title(_comparison_text(mention))
+        if not text:
+            filtered.append(mention)
+            continue
+
+        domain = get_etld_plus_one(
+            mention.get("link")
+            or mention.get("platform")
+            or ""
+        )
+        signature = _title_signature(text)
+        key = (domain, signature)
+        mention_dt = _mention_published_at(mention)
+        candidates = historical_buckets.get(key, [])
+
+        is_duplicate = False
+        for candidate_text, candidate_dt in candidates:
+            if mention_dt and candidate_dt and abs(mention_dt - candidate_dt) > day_delta:
+                continue
+            score = _fuzzy_score(text, candidate_text)
+            if score >= safe_threshold:
+                is_duplicate = True
+                break
+
+        if is_duplicate:
+            removed += 1
+            continue
+
+        filtered.append(mention)
+
+    return filtered, removed

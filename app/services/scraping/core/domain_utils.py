@@ -3,7 +3,9 @@ from urllib.parse import urlparse
 import tldextract
 
 
-_extractor = tldextract.TLDExtract(suffix_list_urls=None)
+# Keep extraction fully offline and disable cache writes to avoid
+# permission warnings in restricted runtime environments.
+_extractor = tldextract.TLDExtract(suffix_list_urls=None, cache_dir=None)
 
 
 def _normalize_host(url_or_host: str) -> str:

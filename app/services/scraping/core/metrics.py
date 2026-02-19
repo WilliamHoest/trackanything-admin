@@ -97,6 +97,12 @@ SCRAPE_DUPLICATES_REMOVED_TOTAL = Counter(
     labelnames=("stage",),
 )
 
+SCRAPE_GUARDRAIL_EVENTS_TOTAL = Counter(
+    "scrape_guardrail_events_total",
+    "Guardrail events during scraping pipeline",
+    labelnames=("guardrail", "provider", "reason"),
+)
+
 
 def observe_scrape_run(scope: str, status: str, duration_seconds: float) -> None:
     scope_label = _label(scope)
@@ -165,6 +171,16 @@ def observe_playwright_fallback(domain: str, result: str) -> None:
 def observe_duplicates_removed(stage: str, count: int) -> None:
     if count > 0:
         SCRAPE_DUPLICATES_REMOVED_TOTAL.labels(stage=_label(stage)).inc(count)
+
+
+def observe_guardrail_event(guardrail: str, provider: str, reason: str, count: int = 1) -> None:
+    if count <= 0:
+        return
+    SCRAPE_GUARDRAIL_EVENTS_TOTAL.labels(
+        guardrail=_label(guardrail),
+        provider=_label(provider),
+        reason=_label(reason),
+    ).inc(count)
 
 
 def render_metrics() -> Tuple[bytes, str]:

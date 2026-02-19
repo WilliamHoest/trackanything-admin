@@ -615,6 +615,59 @@ class SupabaseCRUD:
             print(f"Error getting mentions by keys: {e}")
             return {}
 
+    async def get_recent_mentions_for_brand(
+        self,
+        brand_id: int,
+        days_back: int = 3,
+        limit: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch recent mentions for a brand for historical near-deduplication.
+        Returns normalized mention-like payloads compatible with dedup helpers.
+        """
+        safe_days_back = max(1, int(days_back))
+        safe_limit = max(1, int(limit))
+        cutoff = (datetime.utcnow() - timedelta(days=safe_days_back)).isoformat()
+
+        try:
+            result = (
+                self.supabase.table("mentions")
+                .select("caption, post_link, content_teaser, published_at, created_at, platforms(name)")
+                .eq("brand_id", brand_id)
+                .gte("created_at", cutoff)
+                .order("created_at", desc=True)
+                .limit(safe_limit)
+                .execute()
+            )
+            rows = result.data or []
+
+            normalized: List[Dict[str, Any]] = []
+            for row in rows:
+                platform_join = row.get("platforms")
+                if isinstance(platform_join, dict):
+                    platform_name = platform_join.get("name")
+                elif isinstance(platform_join, list) and platform_join:
+                    first = platform_join[0]
+                    platform_name = first.get("name") if isinstance(first, dict) else None
+                else:
+                    platform_name = None
+
+                normalized.append(
+                    {
+                        "title": row.get("caption", ""),
+                        "link": row.get("post_link", ""),
+                        "content_teaser": row.get("content_teaser", ""),
+                        "published_at": row.get("published_at"),
+                        "created_at": row.get("created_at"),
+                        "platform": platform_name or "Unknown",
+                    }
+                )
+
+            return normalized
+        except Exception as e:
+            print(f"Error getting recent mentions for brand: {e}")
+            return []
+
     async def batch_create_mention_keywords(self, matches: List[Dict[str, Any]]) -> List[str]:
         """Create mention-keyword relations in batch with de-duplication."""
         if not matches:

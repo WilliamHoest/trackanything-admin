@@ -2,7 +2,7 @@ import asyncio
 import logging
 import uuid
 from time import perf_counter
-from typing import List, Dict, Optional
+from typing import Any, Awaitable, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta, timezone
 
 from app.services.scraping.providers.gnews import scrape_gnews
@@ -18,6 +18,7 @@ from app.services.scraping.core.deduplication import near_deduplicate_mentions
 from app.services.scraping.analyzers.relevance_filter import relevance_filter
 from app.services.scraping.core.metrics import (
     observe_duplicates_removed,
+    observe_guardrail_event,
     observe_provider_run,
 )
 from app.core.config import settings
@@ -66,7 +67,7 @@ async def fetch_all_mentions(
     Fetch mentions from all sources in parallel using asyncio.gather.
 
     Benefits:
-    - All 4 sources scrape simultaneously (much faster)
+    - All enabled sources scrape simultaneously (much faster)
     - One failed source doesn't crash the entire batch
     - Returns deduplicated results based on normalized URLs
 
@@ -79,6 +80,25 @@ async def fetch_all_mentions(
     if not sanitized_keywords:
         _run_log(scrape_run_id, "No keywords provided for scraping", logging.WARNING)
         return []
+
+    max_keywords = max(1, int(settings.scraping_max_keywords_per_run))
+    if len(sanitized_keywords) > max_keywords:
+        dropped = len(sanitized_keywords) - max_keywords
+        sanitized_keywords = sanitized_keywords[:max_keywords]
+        _run_log(
+            scrape_run_id,
+            (
+                f"Keyword guardrail triggered: truncating keyword set to {max_keywords} "
+                f"(dropped {dropped})"
+            ),
+            logging.WARNING,
+        )
+        observe_guardrail_event(
+            "max_keywords_per_run",
+            "orchestrator",
+            "truncate",
+            count=dropped,
+        )
 
     scrape_run_id = scrape_run_id or uuid.uuid4().hex[:10]
     from_date = _normalize_from_date(from_date, lookback_days, scrape_run_id=scrape_run_id)
@@ -115,34 +135,72 @@ async def fetch_all_mentions(
             )
             raise
 
-    # Run all scrapers in parallel with from_date
-    # return_exceptions=True ensures one failure doesn't crash others
+    enabled_providers: List[Tuple[str, str, Awaitable[Any]]] = []
+
+    if settings.scraping_provider_gnews_enabled:
+        enabled_providers.append(
+            (
+                "gnews",
+                "GNews",
+                scrape_gnews(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
+            )
+        )
+    else:
+        observe_guardrail_event("provider_toggle", "gnews", "disabled")
+        _run_log(scrape_run_id, "GNews provider disabled by config", logging.INFO)
+
+    if settings.scraping_provider_serpapi_enabled:
+        enabled_providers.append(
+            (
+                "serpapi",
+                "SerpAPI",
+                scrape_serpapi(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
+            )
+        )
+    else:
+        observe_guardrail_event("provider_toggle", "serpapi", "disabled")
+        _run_log(scrape_run_id, "SerpAPI provider disabled by config", logging.INFO)
+
+    if settings.scraping_provider_configurable_enabled:
+        enabled_providers.append(
+            (
+                "configurable",
+                "Configurable Sources",
+                scrape_configurable_sources(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
+            )
+        )
+    else:
+        observe_guardrail_event("provider_toggle", "configurable", "disabled")
+        _run_log(scrape_run_id, "Configurable provider disabled by config", logging.INFO)
+
+    if settings.scraping_provider_rss_enabled:
+        enabled_providers.append(
+            (
+                "rss",
+                "RSS Feed",
+                scrape_rss(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
+            )
+        )
+    else:
+        observe_guardrail_event("provider_toggle", "rss", "disabled")
+        _run_log(scrape_run_id, "RSS provider disabled by config", logging.INFO)
+
+    if not enabled_providers:
+        _run_log(scrape_run_id, "All providers are disabled by config; skipping scrape run", logging.WARNING)
+        observe_guardrail_event("provider_toggle", "orchestrator", "all_disabled")
+        return []
+
+    # Run enabled scrapers in parallel with from_date.
+    # return_exceptions=True ensures one failure doesn't crash others.
     results = await asyncio.gather(
-        _run_provider(
-            "gnews",
-            scrape_gnews(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
-        ),
-        _run_provider(
-            "serpapi",
-            scrape_serpapi(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
-        ),
-        _run_provider(
-            "configurable",
-            scrape_configurable_sources(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
-        ),
-        _run_provider(
-            "rss",
-            scrape_rss(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
-        ),
+        *[_run_provider(provider_name, provider_coro) for provider_name, _, provider_coro in enabled_providers],
         return_exceptions=True
     )
 
     # Collect all mentions, handling exceptions
     all_mentions = []
-    source_names = ["GNews", "SerpAPI", "Configurable Sources", "RSS Feed"]
-
     for idx, result in enumerate(results):
-        source = source_names[idx]
+        source = enabled_providers[idx][1]
         if isinstance(result, Exception):
             _run_log(scrape_run_id, f"{source} scraping failed with exception: {result}", logging.ERROR)
         elif isinstance(result, list):
