@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     scraping_rate_html_rps: float = 1.5
     scraping_rate_api_rps: float = 3.0
     scraping_rate_rss_rps: float = 2.0
+    scraping_fuzzy_dedup_enabled: bool = True
+    scraping_fuzzy_dedup_threshold: int = 92
+    scraping_fuzzy_dedup_day_window: int = 2
     
     @property
     def allowed_origins_list(self) -> List[str]:

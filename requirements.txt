@@ -26,5 +26,6 @@ prometheus-client
 dateparser
 trafilatura
 playwright
+rapidfuzz
 openai  # Used for DeepSeek API (OpenAI-compatible)
 google-search-results

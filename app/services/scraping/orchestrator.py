@@ -14,11 +14,13 @@ from app.services.scraping.core.text_processing import (
     get_platform_from_url,
     clean_keywords,
 )
+from app.services.scraping.core.deduplication import near_deduplicate_mentions
 from app.services.scraping.analyzers.relevance_filter import relevance_filter
 from app.services.scraping.core.metrics import (
     observe_duplicates_removed,
     observe_provider_run,
 )
+from app.core.config import settings
 
 AI_RELEVANCE_FILTER_TEMP_DISABLED = True
 logger = logging.getLogger("scraping")
@@ -167,11 +169,29 @@ async def fetch_all_mentions(
 
             unique_mentions.append(mention)
 
-    duplicates_removed = len(all_mentions) - len(unique_mentions)
-    observe_duplicates_removed(stage="url", count=duplicates_removed)
+    url_duplicates_removed = len(all_mentions) - len(unique_mentions)
+    observe_duplicates_removed(stage="url", count=url_duplicates_removed)
+
+    dedupe_threshold = settings.scraping_fuzzy_dedup_threshold
+    dedupe_day_window = settings.scraping_fuzzy_dedup_day_window
+    if settings.scraping_fuzzy_dedup_enabled:
+        unique_mentions, fuzzy_duplicates_removed = near_deduplicate_mentions(
+            unique_mentions,
+            threshold=dedupe_threshold,
+            day_window=dedupe_day_window,
+        )
+    else:
+        fuzzy_duplicates_removed = 0
+
+    observe_duplicates_removed(stage="fuzzy", count=fuzzy_duplicates_removed)
+    duplicates_removed = url_duplicates_removed + fuzzy_duplicates_removed
     _run_log(
         scrape_run_id,
-        f"Scraping complete: {len(unique_mentions)} unique mentions ({duplicates_removed} duplicates removed)"
+        (
+            f"Scraping complete: {len(unique_mentions)} unique mentions "
+            f"({duplicates_removed} duplicates removed: "
+            f"url={url_duplicates_removed}, fuzzy={fuzzy_duplicates_removed})"
+        )
     )
 
     return unique_mentions
