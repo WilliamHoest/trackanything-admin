@@ -1,6 +1,5 @@
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote_plus
 from dateutil import parser as dateparser
 import httpx
 import logging
@@ -33,6 +32,35 @@ def _to_gnews_iso(dt: datetime) -> str:
     return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _build_gnews_attempts(base_params: Dict[str, str]) -> List[Dict[str, str]]:
+    """
+    Build a short fallback sequence for GNews free-tier compatibility.
+    Some accounts reject combined languages (lang=da,en) with HTTP 400.
+    """
+    attempts: List[Dict[str, str]] = []
+
+    # 1) Preferred: combined language filter for broader coverage.
+    combined = dict(base_params)
+    combined["lang"] = "da,en"
+    attempts.append(combined)
+
+    # 2) Fallback: single language.
+    danish = dict(base_params)
+    danish["lang"] = "da"
+    attempts.append(danish)
+
+    # 3) Fallback: single language.
+    english = dict(base_params)
+    english["lang"] = "en"
+    attempts.append(english)
+
+    # 4) Last resort: no lang filter at all.
+    no_lang = dict(base_params)
+    attempts.append(no_lang)
+
+    return attempts
+
+
 async def scrape_gnews(
     keywords: List[str],
     from_date: Optional[datetime] = None,
@@ -53,24 +81,71 @@ async def scrape_gnews(
 
     since = _normalize_utc(from_date) or (datetime.now(timezone.utc) - timedelta(hours=24))
     cleaned = clean_keywords(keywords)
-    query = quote_plus(" OR ".join(cleaned))
-    since_iso = quote_plus(_to_gnews_iso(since))
-    url = (
-        f"https://gnews.io/api/v4/search?"
-        f"q={query}&token={settings.gnews_api_key}&lang=da,en&max=20&sortby=publishedAt&from={since_iso}"
-    )
+    query = " OR ".join(cleaned)
+    max_results = max(1, min(int(settings.gnews_max_results), 10))
+    base_params: Dict[str, str] = {
+        "q": query,
+        "token": settings.gnews_api_key,
+        "max": str(max_results),
+        "sortby": "publishedAt",
+        "from": _to_gnews_iso(since),
+    }
+    attempts = _build_gnews_attempts(base_params)
 
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
             from app.services.scraping.core.http_client import get_default_headers
             headers = get_default_headers()
-            response = await fetch_with_retry(
-                client,
-                url,
-                rate_profile="api",
-                metrics_provider="gnews",
-                headers=headers,
-            )
+            response: Optional[httpx.Response] = None
+            last_400_body: Optional[str] = None
+
+            for idx, params in enumerate(attempts, start=1):
+                try:
+                    lang_label = params.get("lang", "<none>")
+                    _log(
+                        scrape_run_id,
+                        f"Request attempt {idx}/{len(attempts)} "
+                        f"(lang={lang_label}, max={params.get('max')})",
+                        logging.DEBUG,
+                    )
+                    response = await fetch_with_retry(
+                        client,
+                        "https://gnews.io/api/v4/search",
+                        rate_profile="api",
+                        metrics_provider="gnews",
+                        headers=headers,
+                        params=params,
+                    )
+                    break
+                except httpx.HTTPStatusError as exc:
+                    status = exc.response.status_code if exc.response is not None else None
+                    if status == 400:
+                        body_preview = ""
+                        if exc.response is not None:
+                            body_preview = (exc.response.text or "")[:300]
+                        last_400_body = body_preview
+                        _log(
+                            scrape_run_id,
+                            (
+                                f"Attempt {idx} rejected with HTTP 400 "
+                                f"(lang={params.get('lang', '<none>')}). "
+                                f"Trying fallback..."
+                            ),
+                            logging.WARNING,
+                        )
+                        continue
+                    raise
+
+            if response is None:
+                if last_400_body:
+                    _log(
+                        scrape_run_id,
+                        f"All GNews attempts failed with HTTP 400. "
+                        f"Response preview: {last_400_body}",
+                        logging.ERROR,
+                    )
+                return []
+
             data = response.json()
 
             articles_data = data.get("articles", [])

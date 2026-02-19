@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     deepseek_api_key: str
     deepseek_model: str = "deepseek-chat"  # DeepSeek V3 model for relevance filtering
     gnews_api_key: str
+    gnews_max_results: int = 10
     serpapi_key: str
     tavily_api_key: str = ""  # Optional web search tool
     database_url: str = ""  # PostgreSQL connection string
