@@ -12,8 +12,8 @@ import uuid
 from datetime import datetime, timedelta
 
 class SupabaseCRUD:
-    def __init__(self):
-        self.supabase: Client = get_supabase()
+    def __init__(self, supabase_client: Optional[Client] = None):
+        self.supabase: Client = supabase_client or get_supabase()
 
     # Profile CRUD
     async def get_profile(self, profile_id: uuid.UUID) -> Optional[Dict[str, Any]]:
@@ -68,6 +68,20 @@ class SupabaseCRUD:
             return result.data or []
         except Exception as e:
             print(f"Error getting brands by profile: {e}")
+            return []
+
+    async def get_active_brands_for_scheduling(self) -> List[Dict[str, Any]]:
+        """Get active brands with scheduling fields for cron usage."""
+        try:
+            result = (
+                self.supabase.table("brands")
+                .select("id, name, profile_id, scrape_frequency_hours, last_scraped_at")
+                .eq("is_active", True)
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            print(f"Error getting active brands for scheduling: {e}")
             return []
 
     async def create_brand(self, brand: brand_schemas.BrandCreate, profile_id: uuid.UUID) -> Optional[Dict[str, Any]]:

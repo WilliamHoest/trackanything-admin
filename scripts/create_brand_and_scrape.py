@@ -24,10 +24,8 @@ import argparse
 import asyncio
 import os
 import sys
-import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from types import SimpleNamespace
 
 # Ensure `app` imports work when script is run as `python scripts/...`
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -184,9 +182,9 @@ async def main() -> None:
     )
     args = parser.parse_args()
 
-    from app.api.endpoints.scraping_supabase import scrape_brand
     from app.core.supabase_client import get_supabase_admin
     from app.crud.supabase_crud import SupabaseCRUD
+    from app.services.scraping.pipeline import process_brand_scrape
 
     preset = PRESETS.get(args.preset) if args.preset else None
     topic_specs = build_topic_specs(args)
@@ -270,16 +268,15 @@ async def main() -> None:
             ).execute()
             print(f"    Linked keyword: {kw} (id={keyword_id})")
 
-    crud = SupabaseCRUD()
-    crud.supabase = admin
-    fake_user = SimpleNamespace(id=uuid.UUID(profile_id))
-    scrape_result = await scrape_brand(
+    crud = SupabaseCRUD(supabase_client=admin)
+    scrape_result = await process_brand_scrape(
         brand_id=brand_id,
         crud=crud,
-        current_user=fake_user,
+        apply_relevance_filter=True,
     )
 
     print("\nScrape result:")
+    print(f"  status: {scrape_result.status}")
     print(f"  message: {scrape_result.message}")
     print(f"  mentions_found: {scrape_result.mentions_found}")
     print(f"  mentions_saved: {scrape_result.mentions_saved}")
