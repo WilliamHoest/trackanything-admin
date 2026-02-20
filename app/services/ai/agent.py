@@ -5,11 +5,23 @@ Handles agent creation, caching, and tool registration.
 """
 
 import logging
+
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.providers.deepseek import DeepSeekProvider
+
+from app.core.config import settings
+
 from .context import UserContext
 from .tools import web_search, fetch_page_content, analyze_mentions, fetch_mentions_for_report, save_report
 
 logger = logging.getLogger(__name__)
+
+
+def _create_deepseek_model() -> OpenAIModel:
+    """Build a DeepSeek model instance without mutating global environment variables."""
+    provider = DeepSeekProvider(api_key=settings.deepseek_api_key)
+    return OpenAIModel(settings.deepseek_model, provider=provider)
 
 
 def create_agent_with_prompt(persona: str, system_prompt: str) -> Agent:
@@ -22,15 +34,8 @@ def create_agent_with_prompt(persona: str, system_prompt: str) -> Agent:
     Returns:
         Configured Agent instance with tools registered
     """
-    # Use OpenAI-compatible format for DeepSeek
-    # Set env vars for OpenAI SDK to use DeepSeek endpoint
-    import os
-    os.environ['OPENAI_BASE_URL'] = 'https://api.deepseek.com'
-    os.environ['OPENAI_API_KEY'] = os.getenv('DEEPSEEK_API_KEY', '')
-
-    # Use openai: prefix which will use the OPENAI_BASE_URL env var
     agent = Agent(
-        'openai:deepseek-chat',
+        _create_deepseek_model(),
         deps_type=UserContext,
         system_prompt=system_prompt,  # Static string!
         model_settings={

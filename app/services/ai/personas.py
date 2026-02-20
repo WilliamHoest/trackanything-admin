@@ -135,7 +135,7 @@ Use this information to provide more personalized and relevant insights that ali
     # Add monitoring data context (top 5 mentions for immediate context)
     mentions = context.recent_mentions
     if mentions:
-        unread_count = sum(1 for m in mentions if not m.get("read_status", False))
+        unread_count = sum(1 for mention in mentions if not mention.read_status)
         brands = context.brands
 
         prompt += f"""
@@ -148,13 +148,17 @@ CURRENT MONITORING STATUS:
 RECENT MONITORING DATA (Top 5 - use analyze_mentions tool for full details):
 """
         for i, mention in enumerate(mentions[:5], 1):
-            status = "[READ]" if mention.get("read_status") else "[UNREAD]"
-            brand_name = mention.get("brands", {}).get("name", "N/A") if mention.get("brands") else "N/A"
-            topic_name = mention.get("topics", {}).get("name", "N/A") if mention.get("topics") else "N/A"
-            platform_name = mention.get("platforms", {}).get("name", "N/A") if mention.get("platforms") else "N/A"
-            published_date = mention.get("published_at", "N/A")
+            status = "[READ]" if mention.read_status else "[UNREAD]"
+            brand_name = mention.brand.name if mention.brand else "N/A"
+            topic_name = mention.topic.name if mention.topic else "N/A"
+            platform_name = mention.platform.name if mention.platform else "N/A"
+            published_date = mention.published_at.isoformat() if mention.published_at else "N/A"
+            caption = mention.caption or ""
 
-            prompt += f"{i}. {status} Brand: {brand_name}, Topic: {topic_name}, Platform: {platform_name}, Date: {published_date}, Content: \"{mention.get('caption', '')}\"\n"
+            prompt += (
+                f"{i}. {status} Brand: {brand_name}, Topic: {topic_name}, Platform: {platform_name}, "
+                f"Date: {published_date}, Content: \"{caption}\"\n"
+            )
 
         prompt += "\nUse this monitoring data to provide insights, identify patterns, suggest strategic actions, and highlight urgent items when relevant to the user's questions. Look for trends, sentiment shifts, and opportunities."
 

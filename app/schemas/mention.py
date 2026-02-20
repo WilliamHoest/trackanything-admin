@@ -45,6 +45,26 @@ class MentionWithDetails(MentionResponse):
     brand: Optional["BrandResponse"] = None
     topic: Optional["TopicResponse"] = None
 
+
+class MentionContextRef(BaseModel):
+    id: Optional[int] = None
+    name: str = "N/A"
+
+
+class MentionContext(BaseModel):
+    id: Optional[int] = None
+    caption: str = ""
+    post_link: Optional[str] = None
+    published_at: Optional[datetime] = None
+    read_status: bool = False
+    notified_status: bool = False
+    brand: Optional[MentionContextRef] = None
+    topic: Optional[MentionContextRef] = None
+    platform: Optional[MentionContextRef] = None
+
+    class Config:
+        from_attributes = True
+
 # Import needed for forward references
 from app.schemas.platform import PlatformResponse
 from app.schemas.brand import BrandResponse

@@ -7,10 +7,12 @@ Provides detailed analysis of user mentions beyond the system prompt summary.
 import logging
 from typing import Dict, List
 
+from app.schemas.mention import MentionContext
+
 logger = logging.getLogger(__name__)
 
 
-async def analyze_mentions(mentions: List[Dict]) -> str:
+async def analyze_mentions(mentions: List[MentionContext]) -> str:
     """Analyze all recent mentions for patterns, sentiment, and trends.
 
     Use this to get detailed analysis of the monitoring data beyond
@@ -32,22 +34,22 @@ async def analyze_mentions(mentions: List[Dict]) -> str:
     analysis = f"DETAILED MENTION ANALYSIS ({len(mentions)} mentions):\n\n"
 
     # Group by brand
-    by_brand: Dict[str, List[Dict]] = {}
-    for m in mentions:
-        brand_name = m.get('brands', {}).get('name', 'Unknown') if m.get('brands') else 'Unknown'
-        by_brand.setdefault(brand_name, []).append(m)
+    by_brand: Dict[str, List[MentionContext]] = {}
+    for mention in mentions:
+        brand_name = mention.brand.name if mention.brand else "Unknown"
+        by_brand.setdefault(brand_name, []).append(mention)
 
     for brand, brand_mentions in by_brand.items():
-        unread = sum(1 for m in brand_mentions if not m.get('read_status'))
+        unread = sum(1 for mention in brand_mentions if not mention.read_status)
         analysis += f"📊 Brand: {brand} ({len(brand_mentions)} mentions, {unread} unread)\n"
 
         # Group by topic within brand
         by_topic: Dict[str, int] = {}
         by_platform: Dict[str, int] = {}
 
-        for m in brand_mentions:
-            topic = m.get('topics', {}).get('name', 'N/A') if m.get('topics') else 'N/A'
-            platform = m.get('platforms', {}).get('name', 'N/A') if m.get('platforms') else 'N/A'
+        for mention in brand_mentions:
+            topic = mention.topic.name if mention.topic else "N/A"
+            platform = mention.platform.name if mention.platform else "N/A"
             by_topic[topic] = by_topic.get(topic, 0) + 1
             by_platform[platform] = by_platform.get(platform, 0) + 1
 
@@ -57,12 +59,12 @@ async def analyze_mentions(mentions: List[Dict]) -> str:
 
         # Show sample mentions (top 3)
         analysis += f"  Sample mentions:\n"
-        for i, m in enumerate(brand_mentions[:3], 1):
-            topic = m.get('topics', {}).get('name', 'N/A') if m.get('topics') else 'N/A'
-            platform = m.get('platforms', {}).get('name', 'N/A') if m.get('platforms') else 'N/A'
-            date = m.get('published_at', 'N/A')
-            caption = m.get('caption', '')[:100]
-            status = "✓" if m.get('read_status') else "○"
+        for i, mention in enumerate(brand_mentions[:3], 1):
+            topic = mention.topic.name if mention.topic else "N/A"
+            platform = mention.platform.name if mention.platform else "N/A"
+            date = mention.published_at.isoformat() if mention.published_at else "N/A"
+            caption = (mention.caption or "")[:100]
+            status = "✓" if mention.read_status else "○"
             analysis += f"    {status} [{topic}] {platform} ({date}): {caption}...\n"
 
         analysis += "\n"

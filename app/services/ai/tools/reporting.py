@@ -5,19 +5,24 @@ Allows the agent to fetch mentions within a date range to generate reports.
 """
 
 import logging
-from typing import Dict, Any, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 from datetime import datetime, timedelta
 from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from app.crud.supabase_crud import SupabaseCRUD
+else:
+    SupabaseCRUD = Any
+
 
 async def fetch_mentions_for_report(
-    crud: Any,
+    crud: "SupabaseCRUD",
     user_id: str,
     brand_name: str,
     days_back: int,
-    brands: list
+    brands: list[Dict[str, Any]],
 ) -> str:
     """Fetch mentions for a specific brand within a date range for report generation.
 
@@ -127,13 +132,13 @@ async def fetch_mentions_for_report(
 
 
 async def save_report(
-    crud: Any,
+    crud: "SupabaseCRUD",
     user_id: str,
     title: str,
     content: str,
     brand_name: str,
     report_type: str,
-    brands: list
+    brands: list[Dict[str, Any]],
 ) -> str:
     """Save a generated report to the database.
 
