@@ -5,6 +5,7 @@ Handles agent creation, caching, and tool registration.
 """
 
 import logging
+from typing import Literal
 
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.openai import OpenAIModel
@@ -13,7 +14,16 @@ from pydantic_ai.providers.deepseek import DeepSeekProvider
 from app.core.config import settings
 
 from .context import UserContext
-from .tools import web_search, fetch_page_content, analyze_mentions, fetch_mentions_for_report, save_report
+from .tools import (
+    web_search,
+    fetch_page_content,
+    analyze_mentions,
+    compare_brands as compare_brands_tool,
+    analyze_sentiment_trend as analyze_sentiment_trend_tool,
+    fetch_mentions_for_report,
+    save_report,
+    draft_response as draft_response_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +107,53 @@ def create_agent_with_prompt(persona: str, system_prompt: str) -> Agent:
         logger.info("🔧 TOOL CALLED: analyze_user_mentions")
         return await analyze_mentions(ctx.deps.recent_mentions)
 
+    @agent.tool
+    async def compare_brands(
+        ctx: RunContext[UserContext],
+        brand_a: str,
+        brand_b: str,
+        days_back: int = 7,
+    ) -> str:
+        """Compare mention volume and sentiment between two brands."""
+        logger.info(
+            "🔧 TOOL CALLED: compare_brands(brand_a=%s, brand_b=%s, days_back=%s)",
+            brand_a,
+            brand_b,
+            days_back,
+        )
+        if not ctx.deps.crud:
+            return "❌ Error: Database access not available"
+
+        return await compare_brands_tool(
+            crud=ctx.deps.crud,
+            brands=ctx.deps.brands,
+            brand_a=brand_a,
+            brand_b=brand_b,
+            days_back=days_back,
+        )
+
+    @agent.tool
+    async def analyze_sentiment_trend(
+        ctx: RunContext[UserContext],
+        brand_name: str,
+        days_back: int = 14,
+    ) -> str:
+        """Analyze sentiment trend for one brand over a time window."""
+        logger.info(
+            "🔧 TOOL CALLED: analyze_sentiment_trend(brand_name=%s, days_back=%s)",
+            brand_name,
+            days_back,
+        )
+        if not ctx.deps.crud:
+            return "❌ Error: Database access not available"
+
+        return await analyze_sentiment_trend_tool(
+            crud=ctx.deps.crud,
+            brands=ctx.deps.brands,
+            brand_name=brand_name,
+            days_back=days_back,
+        )
+
     # Register tool: fetch_mentions_for_report
     @agent.tool
     async def generate_report_data(ctx: RunContext[UserContext], brand_name: str, days_back: int) -> str:
@@ -161,6 +218,36 @@ def create_agent_with_prompt(persona: str, system_prompt: str) -> Agent:
             brands=ctx.deps.brands
         )
 
+    @agent.tool
+    async def draft_response(
+        ctx: RunContext[UserContext],
+        mention_id: int,
+        format: Literal["linkedin", "email", "press_release"],
+        tone: Literal["professional", "urgent", "casual"],
+    ) -> str:
+        """Draft a LinkedIn/email/press-release response from one mention."""
+        logger.info(
+            "🔧 TOOL CALLED: draft_response(mention_id=%s, format=%s, tone=%s)",
+            mention_id,
+            format,
+            tone,
+        )
+        if not ctx.deps.crud:
+            return "❌ Error: Database access not available"
+
+        allowed_brand_ids = [
+            brand["id"]
+            for brand in ctx.deps.brands
+            if isinstance(brand.get("id"), int)
+        ]
+        return await draft_response_tool(
+            crud=ctx.deps.crud,
+            mention_id=mention_id,
+            format=format,
+            tone=tone,
+            allowed_brand_ids=allowed_brand_ids,
+        )
+
     # Debug: Inspect agent's registered tools
     try:
         import inspect
@@ -180,5 +267,5 @@ def create_agent_with_prompt(persona: str, system_prompt: str) -> Agent:
     except Exception as e:
         logger.error(f"Error inspecting agent: {e}")
 
-    logger.info(f"✅ Created agent for persona: {persona} with 5 tools")
+    logger.info(f"✅ Created agent for persona: {persona} with 8 tools")
     return agent

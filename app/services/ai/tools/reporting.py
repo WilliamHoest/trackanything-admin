@@ -5,9 +5,11 @@ Allows the agent to fetch mentions within a date range to generate reports.
 """
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Literal, Optional, Sequence
 from datetime import datetime, timedelta
 from uuid import UUID
+
+from pydantic import BaseModel, Field, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +17,37 @@ if TYPE_CHECKING:
     from app.crud.supabase_crud import SupabaseCRUD
 else:
     SupabaseCRUD = Any
+
+
+class DraftResponseRequest(BaseModel):
+    """Validated input for drafting a response from a mention."""
+
+    mention_id: int = Field(gt=0)
+    format: Literal["linkedin", "email", "press_release"]
+    tone: Literal["professional", "urgent", "casual"]
+
+
+def _render_draft_style_instructions(format_name: str, tone: str) -> str:
+    if format_name == "linkedin":
+        return (
+            f"Write as a {tone} LinkedIn post.\n"
+            "- Start with a clear hook sentence.\n"
+            "- Use short paragraphs.\n"
+            "- End with one CTA and max 3 hashtags."
+        )
+    if format_name == "email":
+        return (
+            f"Write as a {tone} email.\n"
+            "- Include Subject line.\n"
+            "- Include greeting, core message, and explicit next step.\n"
+            "- Keep it concise and clear."
+        )
+    return (
+        f"Write as a {tone} press release draft.\n"
+        "- Include headline and short lead paragraph.\n"
+        "- Include a quote placeholder from spokesperson.\n"
+        "- Include a factual boilerplate ending."
+    )
 
 
 async def fetch_mentions_for_report(
@@ -195,3 +228,63 @@ async def save_report(
     except Exception as e:
         logger.error(f"Error saving report: {e}")
         return f"❌ Error saving report: {str(e)}"
+
+
+async def draft_response(
+    crud: "SupabaseCRUD",
+    mention_id: int,
+    format: str,
+    tone: str,
+    allowed_brand_ids: Optional[Sequence[int]] = None,
+) -> str:
+    """Fetch one mention and return drafting instructions for the LLM."""
+    try:
+        params = DraftResponseRequest(mention_id=mention_id, format=format, tone=tone)
+    except ValidationError as e:
+        return f"❌ Invalid draft_response input: {e}"
+
+    try:
+        mention = await crud.get_mention_by_id(params.mention_id)
+    except Exception as e:
+        logger.error("draft_response database fetch failed: %s", e, exc_info=True)
+        return f"❌ Database error while fetching mention: {e}"
+
+    if not mention:
+        return f"❌ Mention with id {params.mention_id} was not found."
+
+    if allowed_brand_ids is not None and mention.get("brand_id") not in set(allowed_brand_ids):
+        return "❌ Mention access denied for this user."
+
+    brand_name = mention.get("brand", {}).get("name", "N/A") if isinstance(mention.get("brand"), dict) else "N/A"
+    topic_name = mention.get("topic", {}).get("name", "N/A") if isinstance(mention.get("topic"), dict) else "N/A"
+    platform_name = (
+        mention.get("platform", {}).get("name", "N/A")
+        if isinstance(mention.get("platform"), dict)
+        else "N/A"
+    )
+    published_at = mention.get("published_at") or mention.get("created_at") or "N/A"
+    caption = (mention.get("caption") or "").strip()
+    teaser = (mention.get("content_teaser") or "").strip()
+    source_text = f"{caption} {teaser}".strip() or "No mention text available."
+    source_link = mention.get("post_link") or "N/A"
+
+    style_guide = _render_draft_style_instructions(params.format, params.tone)
+
+    return (
+        "ATLAS EDITOR TASK: Draft a response based strictly on this mention.\n\n"
+        f"Target format: {params.format}\n"
+        f"Tone: {params.tone}\n"
+        f"{style_guide}\n\n"
+        "Source mention:\n"
+        f"- Mention ID: {params.mention_id}\n"
+        f"- Brand: {brand_name}\n"
+        f"- Topic: {topic_name}\n"
+        f"- Platform: {platform_name}\n"
+        f"- Published at: {published_at}\n"
+        f"- Link: {source_link}\n"
+        f"- Text: {source_text}\n\n"
+        "Output requirements:\n"
+        "1. Keep factual alignment with the source text.\n"
+        "2. Do not invent claims that are not present in the mention.\n"
+        "3. If context is missing, use neutral placeholder wording."
+    )

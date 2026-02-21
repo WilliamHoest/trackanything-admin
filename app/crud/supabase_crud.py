@@ -262,6 +262,89 @@ class SupabaseCRUD:
             return False
 
     # Mention CRUD
+    @staticmethod
+    def _normalize_mention_relations(mention: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize Supabase plural join names to singular keys used by schemas/tools."""
+        normalized = dict(mention)
+        if "brands" in normalized:
+            normalized["brand"] = normalized.pop("brands")
+        if "topics" in normalized:
+            normalized["topic"] = normalized.pop("topics")
+        if "platforms" in normalized:
+            normalized["platform"] = normalized.pop("platforms")
+
+        if "mention_keywords" in normalized:
+            keyword_matches = []
+            for match in normalized.pop("mention_keywords") or []:
+                keyword = match.get("keywords")
+                if keyword:
+                    keyword_matches.append(
+                        {
+                            "keyword": keyword,
+                            "matched_in": match.get("matched_in"),
+                            "score": match.get("score"),
+                        }
+                    )
+            normalized["keyword_matches"] = keyword_matches
+
+        return normalized
+
+    async def get_recent_mentions_for_brand_analysis(
+        self,
+        brand_id: int,
+        days_back: int = 7,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Fetch recent mentions for a single brand for on-the-fly AI analysis."""
+        safe_days_back = max(1, int(days_back))
+        safe_limit = max(1, min(int(limit), 200))
+        cutoff = (datetime.utcnow() - timedelta(days=safe_days_back)).isoformat()
+
+        try:
+            result = (
+                self.supabase.table("mentions")
+                .select(
+                    """
+                    id, brand_id, topic_id, platform_id, caption, content_teaser, post_link,
+                    published_at, created_at, read_status, notified_status,
+                    brands(id, name), topics(id, name), platforms(id, name)
+                    """
+                )
+                .eq("brand_id", brand_id)
+                .gte("created_at", cutoff)
+                .order("created_at", desc=True)
+                .limit(safe_limit)
+                .execute()
+            )
+            rows = result.data or []
+            return [self._normalize_mention_relations(row) for row in rows]
+        except Exception as e:
+            print(f"Error getting recent mentions for analysis: {e}")
+            return []
+
+    async def get_mention_by_id(self, mention_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch a single mention by ID with brand/topic/platform context."""
+        try:
+            result = (
+                self.supabase.table("mentions")
+                .select(
+                    """
+                    id, brand_id, topic_id, platform_id, caption, content_teaser, post_link,
+                    published_at, created_at, read_status, notified_status,
+                    brands(id, name), topics(id, name), platforms(id, name)
+                    """
+                )
+                .eq("id", mention_id)
+                .limit(1)
+                .execute()
+            )
+            if not result.data:
+                return None
+            return self._normalize_mention_relations(result.data[0])
+        except Exception as e:
+            print(f"Error getting mention by id: {e}")
+            return None
+
     async def get_mentions_by_profile(self, profile_id: uuid.UUID, skip: int = 0, limit: int = 50,
                                     brand_id: Optional[int] = None, platform_id: Optional[int] = None,
                                     read_status: Optional[bool] = None,
@@ -309,28 +392,7 @@ class SupabaseCRUD:
 
             result = query.execute()
             mentions = result.data or []
-
-            # Transform Supabase plural join names to singular for Pydantic schema
-            for mention in mentions:
-                if "brands" in mention:
-                    mention["brand"] = mention.pop("brands")
-                if "topics" in mention:
-                    mention["topic"] = mention.pop("topics")
-                if "platforms" in mention:
-                    mention["platform"] = mention.pop("platforms")
-                if "mention_keywords" in mention:
-                    keyword_matches = []
-                    for match in mention.pop("mention_keywords") or []:
-                        keyword = match.get("keywords")
-                        if keyword:
-                            keyword_matches.append({
-                                "keyword": keyword,
-                                "matched_in": match.get("matched_in"),
-                                "score": match.get("score")
-                            })
-                    mention["keyword_matches"] = keyword_matches
-
-            return mentions
+            return [self._normalize_mention_relations(mention) for mention in mentions]
         except Exception as e:
             print(f"Error getting mentions: {e}")
             return []
