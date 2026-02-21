@@ -46,6 +46,16 @@ class SentimentTrendRequest(BaseModel):
         return value.strip()
 
 
+class AdaptiveFetchResult(BaseModel):
+    """Metadata and payload from adaptive mention retrieval."""
+
+    mentions: List[Dict[str, Any]]
+    requested_days_back: int
+    effective_days_back: int
+    requested_limit: int
+    effective_limit: int
+
+
 def _resolve_brand_id(brands: List[Dict[str, Any]], brand_name: str) -> Optional[int]:
     for brand in brands:
         if brand.get("name", "").strip().lower() == brand_name.strip().lower():
@@ -87,6 +97,51 @@ def _format_mentions_block(brand_name: str, mentions: List[Dict[str, Any]]) -> s
 
     rows = "\n".join(_format_mention_row(mention) for mention in mentions)
     return f"{brand_name} ({len(mentions)} mentions):\n{rows}"
+
+
+async def _fetch_mentions_adaptive(
+    crud: "SupabaseCRUD",
+    brand_id: int,
+    days_back: int,
+    base_limit: int = 50,
+    min_desired_mentions: int = 20,
+) -> AdaptiveFetchResult:
+    """Fetch mentions with adaptive expansion when context is sparse."""
+    safe_days = max(1, int(days_back))
+    safe_limit = max(10, int(base_limit))
+
+    attempt_plan: List[tuple[int, int]] = [
+        (safe_days, safe_limit),
+        (safe_days, min(120, safe_limit * 2)),
+        (min(180, safe_days * 2), min(200, safe_limit * 3)),
+    ]
+
+    best_mentions: List[Dict[str, Any]] = []
+    effective_days = safe_days
+    effective_limit = safe_limit
+
+    for days_attempt, limit_attempt in attempt_plan:
+        mentions = await crud.get_recent_mentions_for_brand_analysis(
+            brand_id=brand_id,
+            days_back=days_attempt,
+            limit=limit_attempt,
+        )
+
+        if len(mentions) > len(best_mentions):
+            best_mentions = mentions
+            effective_days = days_attempt
+            effective_limit = limit_attempt
+
+        if len(mentions) >= min_desired_mentions:
+            break
+
+    return AdaptiveFetchResult(
+        mentions=best_mentions,
+        requested_days_back=safe_days,
+        effective_days_back=effective_days,
+        requested_limit=safe_limit,
+        effective_limit=effective_limit,
+    )
 
 
 async def analyze_mentions(mentions: List[MentionContext]) -> str:
@@ -162,21 +217,26 @@ async def compare_brands(
         return f"Brand '{params.brand_b}' not found. Available brands: {available_brands}"
 
     try:
-        brand_a_mentions, brand_b_mentions = await asyncio.gather(
-            crud.get_recent_mentions_for_brand_analysis(
+        brand_a_data, brand_b_data = await asyncio.gather(
+            _fetch_mentions_adaptive(
+                crud=crud,
                 brand_id=brand_a_id,
                 days_back=params.days_back,
-                limit=50,
+                base_limit=50,
             ),
-            crud.get_recent_mentions_for_brand_analysis(
+            _fetch_mentions_adaptive(
+                crud=crud,
                 brand_id=brand_b_id,
                 days_back=params.days_back,
-                limit=50,
+                base_limit=50,
             ),
         )
     except Exception as e:
         logger.error("compare_brands database fetch failed: %s", e, exc_info=True)
         return f"Database error while fetching brand mentions: {e}"
+
+    brand_a_mentions = brand_a_data.mentions
+    brand_b_mentions = brand_b_data.mentions
 
     if not brand_a_mentions and not brand_b_mentions:
         return (
@@ -191,7 +251,9 @@ async def compare_brands(
         "2. Sentiment comparison (positive/neutral/negative) inferred on-the-fly.\n"
         "3. Main themes driving sentiment for each brand.\n"
         "4. One concrete next action per brand.\n\n"
-        f"Window: last {params.days_back} days.\n\n"
+        f"Requested window: last {params.days_back} days.\n"
+        f"Effective data window: {params.brand_a}={brand_a_data.effective_days_back}d/{brand_a_data.effective_limit} rows, "
+        f"{params.brand_b}={brand_b_data.effective_days_back}d/{brand_b_data.effective_limit} rows.\n\n"
         f"{_format_mentions_block(params.brand_a, brand_a_mentions)}\n\n"
         f"{_format_mentions_block(params.brand_b, brand_b_mentions)}\n\n"
         "Important: Do not invent data. If confidence is low, say so explicitly."
@@ -216,14 +278,17 @@ async def analyze_sentiment_trend(
         return f"Brand '{params.brand_name}' not found. Available brands: {available_brands}"
 
     try:
-        mentions = await crud.get_recent_mentions_for_brand_analysis(
+        mention_data = await _fetch_mentions_adaptive(
+            crud=crud,
             brand_id=brand_id,
             days_back=params.days_back,
-            limit=50,
+            base_limit=50,
         )
     except Exception as e:
         logger.error("analyze_sentiment_trend database fetch failed: %s", e, exc_info=True)
         return f"Database error while fetching mentions: {e}"
+
+    mentions = mention_data.mentions
 
     if not mentions:
         return f"No mentions found for '{params.brand_name}' in the last {params.days_back} days."
@@ -237,7 +302,8 @@ async def analyze_sentiment_trend(
         "4. Early warning signals to track next.\n"
         "5. Two concrete next actions.\n\n"
         f"Brand: {params.brand_name}\n"
-        f"Window: last {params.days_back} days.\n\n"
+        f"Requested window: last {params.days_back} days.\n"
+        f"Effective data window: {mention_data.effective_days_back} days, {mention_data.effective_limit} row limit.\n\n"
         f"{_format_mentions_block(params.brand_name, mentions)}\n\n"
         "Important: If evidence is weak, mark confidence as low."
     )

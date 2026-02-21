@@ -11,6 +11,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, ValidationError
 
+from .content_fetch import fetch_page_content
+
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -25,6 +27,14 @@ class DraftResponseRequest(BaseModel):
     mention_id: int = Field(gt=0)
     format: Literal["linkedin", "email", "press_release"]
     tone: Literal["professional", "urgent", "casual"]
+    include_full_context: bool = False
+
+
+class MentionContextRequest(BaseModel):
+    """Validated input for mention context retrieval."""
+
+    mention_id: int = Field(gt=0)
+    include_full_page: bool = False
 
 
 def _render_draft_style_instructions(format_name: str, tone: str) -> str:
@@ -235,11 +245,17 @@ async def draft_response(
     mention_id: int,
     format: str,
     tone: str,
+    include_full_context: bool = False,
     allowed_brand_ids: Optional[Sequence[int]] = None,
 ) -> str:
     """Fetch one mention and return drafting instructions for the LLM."""
     try:
-        params = DraftResponseRequest(mention_id=mention_id, format=format, tone=tone)
+        params = DraftResponseRequest(
+            mention_id=mention_id,
+            format=format,
+            tone=tone,
+            include_full_context=include_full_context,
+        )
     except ValidationError as e:
         return f"❌ Invalid draft_response input: {e}"
 
@@ -267,6 +283,14 @@ async def draft_response(
     teaser = (mention.get("content_teaser") or "").strip()
     source_text = f"{caption} {teaser}".strip() or "No mention text available."
     source_link = mention.get("post_link") or "N/A"
+    full_context_block = ""
+
+    if params.include_full_context and source_link.startswith(("http://", "https://")):
+        extracted = await fetch_page_content(source_link)
+        full_context_block = (
+            "\n\nExtended source context (fetched from URL):\n"
+            f"{extracted[:4000]}"
+        )
 
     style_guide = _render_draft_style_instructions(params.format, params.tone)
 
@@ -282,9 +306,68 @@ async def draft_response(
         f"- Platform: {platform_name}\n"
         f"- Published at: {published_at}\n"
         f"- Link: {source_link}\n"
-        f"- Text: {source_text}\n\n"
+        f"- Text: {source_text}"
+        f"{full_context_block}\n\n"
         "Output requirements:\n"
         "1. Keep factual alignment with the source text.\n"
         "2. Do not invent claims that are not present in the mention.\n"
         "3. If context is missing, use neutral placeholder wording."
     )
+
+
+async def fetch_mention_context(
+    crud: "SupabaseCRUD",
+    mention_id: int,
+    include_full_page: bool = False,
+    allowed_brand_ids: Optional[Sequence[int]] = None,
+) -> str:
+    """Fetch structured mention context and optionally full page content from mention URL."""
+    try:
+        params = MentionContextRequest(
+            mention_id=mention_id,
+            include_full_page=include_full_page,
+        )
+    except ValidationError as e:
+        return f"❌ Invalid fetch_mention_context input: {e}"
+
+    try:
+        mention = await crud.get_mention_by_id(params.mention_id)
+    except Exception as e:
+        logger.error("fetch_mention_context database fetch failed: %s", e, exc_info=True)
+        return f"❌ Database error while fetching mention: {e}"
+
+    if not mention:
+        return f"❌ Mention with id {params.mention_id} was not found."
+
+    if allowed_brand_ids is not None and mention.get("brand_id") not in set(allowed_brand_ids):
+        return "❌ Mention access denied for this user."
+
+    brand_name = mention.get("brand", {}).get("name", "N/A") if isinstance(mention.get("brand"), dict) else "N/A"
+    topic_name = mention.get("topic", {}).get("name", "N/A") if isinstance(mention.get("topic"), dict) else "N/A"
+    platform_name = (
+        mention.get("platform", {}).get("name", "N/A")
+        if isinstance(mention.get("platform"), dict)
+        else "N/A"
+    )
+    published_at = mention.get("published_at") or mention.get("created_at") or "N/A"
+    caption = (mention.get("caption") or "").strip()
+    teaser = (mention.get("content_teaser") or "").strip()
+    source_link = mention.get("post_link") or "N/A"
+
+    result = (
+        f"Mention context\n"
+        f"- Mention ID: {params.mention_id}\n"
+        f"- Brand: {brand_name}\n"
+        f"- Topic: {topic_name}\n"
+        f"- Platform: {platform_name}\n"
+        f"- Published at: {published_at}\n"
+        f"- Link: {source_link}\n"
+        f"- Caption: {caption or 'N/A'}\n"
+        f"- Teaser: {teaser or 'N/A'}"
+    )
+
+    if params.include_full_page and source_link.startswith(("http://", "https://")):
+        extracted = await fetch_page_content(source_link)
+        result += f"\n\nExtended source context (URL extraction):\n{extracted[:4000]}"
+
+    return result

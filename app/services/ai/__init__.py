@@ -4,13 +4,82 @@ AI Service Package using PydanticAI
 Main exports for the AI service functionality.
 """
 
-from typing import AsyncGenerator, List, Dict, Any
+from typing import AsyncGenerator, List, Dict, Any, Tuple
 import logging
 import asyncio
 from .context import UserContext
 from .personas import build_context_message
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_tools_used(result: Any) -> List[str]:
+    """Extract unique tool names used during an agent run."""
+    try:
+        messages = result.all_messages()
+    except Exception:
+        return []
+
+    tools_used: List[str] = []
+    seen: set[str] = set()
+
+    for message in messages:
+        for part in getattr(message, "parts", []) or []:
+            tool_name = getattr(part, "tool_name", None)
+            if not tool_name:
+                continue
+            if tool_name in seen:
+                continue
+            seen.add(tool_name)
+            tools_used.append(tool_name)
+
+    return tools_used
+
+
+async def run_chat_once(
+    message: str,
+    conversation_history: List[Dict[str, str]],
+    context: UserContext,
+    persona: str = "general",
+) -> Tuple[str, List[str]]:
+    """Run the AI agent once and return final text + tools used."""
+    # Build system prompt with current context FIRST
+    system_prompt = build_context_message(persona, context)
+    logger.info(f"📋 Built system prompt: {len(system_prompt)} chars")
+
+    # Create agent with this specific system prompt (no caching due to user-specific context)
+    from .agent import create_agent_with_prompt
+    agent = create_agent_with_prompt(persona, system_prompt)
+
+    # Convert conversation history to PydanticAI format (last 6 messages)
+    messages = [
+        {'role': msg['role'], 'content': msg['content']}
+        for msg in conversation_history[-6:]
+    ]
+
+    logger.info(f"Running chat response for user {context.user_id} with persona {persona}")
+    logger.info("🔍 Agent has tools registered and ready")
+    logger.info(f"🔍 Agent model: {agent.model}")
+    logger.info(f"🔍 User message: {message}")
+
+    result = await agent.run(
+        message,
+        message_history=messages,
+        deps=context,
+    )
+
+    if hasattr(result, 'output'):
+        final_text = result.output
+    elif hasattr(result, 'data'):
+        final_text = result.data
+    else:
+        final_text = str(result)
+
+    final_str = str(final_text)
+    tools_used = _extract_tools_used(result)
+    logger.info(f"🔧 Tools used in run: {tools_used}")
+
+    return final_str, tools_used
 
 
 async def stream_chat_response(
@@ -31,54 +100,15 @@ async def stream_chat_response(
         Text chunks (plain strings) for streaming to client
     """
     try:
-        # Build system prompt with current context FIRST
-        system_prompt = build_context_message(persona, context)
-        logger.info(f"📋 Built system prompt: {len(system_prompt)} chars")
-
-        # Create agent with this specific system prompt (no caching due to user-specific context)
-        from .agent import create_agent_with_prompt
-        agent = create_agent_with_prompt(persona, system_prompt)
-
-        # Convert conversation history to PydanticAI format (last 6 messages)
-        messages = [
-            {'role': msg['role'], 'content': msg['content']}
-            for msg in conversation_history[-6:]
-        ]
-
-        logger.info(f"Streaming chat response for user {context.user_id} with persona {persona}")
-
-        # DEBUG: Log that tools are registered
-        logger.info(f"🔍 Agent has tools registered and ready")
-        logger.info(f"🔍 Agent model: {agent.model}")
-        logger.info(f"🔍 User message: {message}")
-
-        # CRITICAL CHANGE: Use run() instead of run_stream() to properly execute tools
-        # Then manually stream the result to the client
-        logger.info(f"🔍 Running agent with tool execution (non-streaming)...")
-
-        # Run agent and wait for complete result (including tool execution)
-        result = await agent.run(
-            message,
-            message_history=messages,
-            deps=context,
+        final_str, tools_used = await run_chat_once(
+            message=message,
+            conversation_history=conversation_history,
+            context=context,
+            persona=persona,
         )
+        logger.info(f"🔍 Final response ({len(final_str)} chars): {final_str[:200]}...")
+        logger.info(f"🔧 Tools used for streamed response: {tools_used}")
 
-        logger.info(f"🔍 Agent execution completed")
-
-        # Get the final data after all tool calls
-        # PydanticAI RunResult uses .output or .data depending on version
-        if hasattr(result, 'output'):
-            final_text = result.output
-        elif hasattr(result, 'data'):
-            final_text = result.data
-        else:
-            # Fallback: convert result to string directly
-            final_text = str(result)
-
-        logger.info(f"🔍 Final response ({len(str(final_text))} chars): {str(final_text)[:200]}...")
-
-        # Manually stream the response character by character for smooth UX
-        final_str = str(final_text)
         chunk_size = 10  # Characters per chunk
 
         for i in range(0, len(final_str), chunk_size):
@@ -97,4 +127,5 @@ async def stream_chat_response(
 __all__ = [
     'UserContext',
     'stream_chat_response',
+    'run_chat_once',
 ]

@@ -16,6 +16,7 @@ from app.core.config import settings
 from .context import UserContext
 from .tools import (
     web_search,
+    search_brand_web as search_brand_web_tool,
     fetch_page_content,
     analyze_mentions,
     compare_brands as compare_brands_tool,
@@ -23,6 +24,7 @@ from .tools import (
     fetch_mentions_for_report,
     save_report,
     draft_response as draft_response_tool,
+    fetch_mention_context as fetch_mention_context_tool,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,6 +77,29 @@ def create_agent_with_prompt(persona: str, system_prompt: str) -> Agent:
             Formatted search results with titles, URLs, and content snippets
         """
         return await web_search(query)
+
+    @agent.tool
+    async def search_brand_web(
+        ctx: RunContext[UserContext],
+        brand_name: str,
+        focus: str = "",
+        days_back: int = 7,
+        max_results: int = 8,
+    ) -> str:
+        """Search external web for a specific brand (scraping-like discovery mode)."""
+        logger.info(
+            "🔧 TOOL CALLED: search_brand_web(brand_name=%s, focus=%s, days_back=%s, max_results=%s)",
+            brand_name,
+            focus,
+            days_back,
+            max_results,
+        )
+        return await search_brand_web_tool(
+            brand_name=brand_name,
+            focus=focus,
+            days_back=days_back,
+            max_results=max_results,
+        )
 
     # Register tool: fetch_page_content
     @agent.tool
@@ -224,13 +249,15 @@ def create_agent_with_prompt(persona: str, system_prompt: str) -> Agent:
         mention_id: int,
         format: Literal["linkedin", "email", "press_release"],
         tone: Literal["professional", "urgent", "casual"],
+        include_full_context: bool = False,
     ) -> str:
         """Draft a LinkedIn/email/press-release response from one mention."""
         logger.info(
-            "🔧 TOOL CALLED: draft_response(mention_id=%s, format=%s, tone=%s)",
+            "🔧 TOOL CALLED: draft_response(mention_id=%s, format=%s, tone=%s, include_full_context=%s)",
             mention_id,
             format,
             tone,
+            include_full_context,
         )
         if not ctx.deps.crud:
             return "❌ Error: Database access not available"
@@ -245,6 +272,34 @@ def create_agent_with_prompt(persona: str, system_prompt: str) -> Agent:
             mention_id=mention_id,
             format=format,
             tone=tone,
+            include_full_context=include_full_context,
+            allowed_brand_ids=allowed_brand_ids,
+        )
+
+    @agent.tool
+    async def fetch_mention_context(
+        ctx: RunContext[UserContext],
+        mention_id: int,
+        include_full_page: bool = False,
+    ) -> str:
+        """Fetch mention details and optionally retrieve full page context from mention URL."""
+        logger.info(
+            "🔧 TOOL CALLED: fetch_mention_context(mention_id=%s, include_full_page=%s)",
+            mention_id,
+            include_full_page,
+        )
+        if not ctx.deps.crud:
+            return "❌ Error: Database access not available"
+
+        allowed_brand_ids = [
+            brand["id"]
+            for brand in ctx.deps.brands
+            if isinstance(brand.get("id"), int)
+        ]
+        return await fetch_mention_context_tool(
+            crud=ctx.deps.crud,
+            mention_id=mention_id,
+            include_full_page=include_full_page,
             allowed_brand_ids=allowed_brand_ids,
         )
 
@@ -267,5 +322,5 @@ def create_agent_with_prompt(persona: str, system_prompt: str) -> Agent:
     except Exception as e:
         logger.error(f"Error inspecting agent: {e}")
 
-    logger.info(f"✅ Created agent for persona: {persona} with 8 tools")
+    logger.info(f"✅ Created agent for persona: {persona} with 10 tools")
     return agent

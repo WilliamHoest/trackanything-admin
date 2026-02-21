@@ -7,7 +7,7 @@ from app.security.auth import get_current_user
 from app.core.config import settings
 from app.core.supabase_db import get_supabase_crud
 from app.crud.supabase_crud import SupabaseCRUD
-from app.services.ai import UserContext, stream_chat_response
+from app.services.ai import UserContext, run_chat_once
 import json
 
 router = APIRouter()
@@ -24,6 +24,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     content: str
     chat_id: Optional[UUID] = None
+    tools_used: List[str] = []
 
 @router.post("/stream")
 async def stream_chat(
@@ -88,23 +89,24 @@ async def stream_chat(
 
         # Get persona from profile (future extension)
         persona = profile.get("ai_persona", "general")
-        
-        # 3. Stream and Accumulate for Persistence
+
+        # 3. Run once to capture both text and tool trace, then stream text chunks.
+        final_text, tools_used = await run_chat_once(
+            message=request.message,
+            conversation_history=conversation_history,
+            context=context,
+            persona=persona,
+        )
+
+        # 4. Stream and Accumulate for Persistence
         async def stream_with_persistence():
-            full_response = ""
-            # Yield chat_id first if it was newly created (client might need it)
-            # But StreamingResponse expects string bytes.
-            # We will rely on client re-fetching or handling the chat_id from response headers if we could,
-            # but standard StreamingResponse is body-only.
-            # Alternatively, we assume client updates URL if they provided no ID, 
-            # but since we can't send JSON + Stream easily, we just stream the text.
-            # The client will have to refresh the chat list to see the new chat.
-            
-            async for chunk in stream_chat_response(request.message, conversation_history, context, persona):
-                full_response += chunk
+            full_response = final_text
+            chunk_size = 10
+            for i in range(0, len(final_text), chunk_size):
+                chunk = final_text[i:i+chunk_size]
                 yield chunk
-            
-            # 4. Save Assistant Message after stream completes
+
+            # 5. Save Assistant Message after stream completes
             if chat_id and full_response.strip():
                 await crud.create_message(chat_id, "assistant", full_response)
         
@@ -114,7 +116,8 @@ async def stream_chat(
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
-                "X-Chat-ID": str(chat_id) if chat_id else "" # Pass Chat ID in header so client knows
+                "X-Chat-ID": str(chat_id) if chat_id else "", # Pass Chat ID in header so client knows
+                "X-Atlas-Tools-Used": ",".join(tools_used),
             }
         )
         
@@ -174,15 +177,14 @@ async def chat(
             for msg in request.conversation_history
         ]
         
-        # Get AI response (collect all chunks)
-        response_chunks = []
-        async for chunk in stream_chat_response(request.message, conversation_history, context, persona):
-            if chunk.strip():
-                response_chunks.append(chunk)
+        full_response, tools_used = await run_chat_once(
+            message=request.message,
+            conversation_history=conversation_history,
+            context=context,
+            persona=persona,
+        )
 
-        full_response = "".join(response_chunks)
-        
-        return ChatResponse(content=full_response)
+        return ChatResponse(content=full_response, tools_used=tools_used)
         
     except Exception as e:
         raise HTTPException(
