@@ -59,17 +59,20 @@ def _build_gnews_attempts(
     """
     Build language fallback sequence for GNews compatibility.
 
-    When allowed_languages is provided, the first attempt uses those languages
-    directly. The original da/en fallback chain is only used when no explicit
-    filter is set, to avoid spurious fallbacks.
+    GNews `lang` only accepts a single language code. When multiple languages
+    are allowed, we skip the lang param entirely and rely on the post-processing
+    langdetect filter. When exactly one language is specified, we use it natively.
+    When no filter is set, we try da then en then no-lang as fallback chain.
     """
     attempts: List[Dict[str, str]] = []
 
-    first = dict(base_params)
-    first["lang"] = ",".join(allowed_languages) if allowed_languages else "da,en"
-    attempts.append(first)
-
-    if not allowed_languages:
+    if allowed_languages and len(allowed_languages) == 1:
+        # Single language: use native GNews filtering
+        single = dict(base_params)
+        single["lang"] = allowed_languages[0]
+        attempts.append(single)
+    elif not allowed_languages:
+        # No filter: try da then en
         danish = dict(base_params)
         danish["lang"] = "da"
         attempts.append(danish)
@@ -77,6 +80,7 @@ def _build_gnews_attempts(
         english = dict(base_params)
         english["lang"] = "en"
         attempts.append(english)
+    # Multiple languages: fall through to no-lang below (langdetect handles filtering)
 
     # Always: no-lang fallback (ensures we never silently drop a keyword)
     no_lang = dict(base_params)
