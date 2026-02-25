@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     scraping_run_artifacts_max_mentions: int = 500
     scraping_language_filter_enabled: bool = True
     scraping_default_languages: str = "da,no,sv,en"
+    scraping_gnews_inter_request_delay_s: float = 1.0
 
     @property
     def scraping_default_languages_list(self) -> List[str]:

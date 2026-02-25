@@ -36,6 +36,10 @@ def _get_logs_dir() -> Path:
     return log_dir
 
 
+def get_logs_dir() -> Path:
+    return _get_logs_dir()
+
+
 def _detailed_formatter() -> logging.Formatter:
     return logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s',

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
@@ -201,6 +202,9 @@ async def scrape_gnews(
             _log(scrape_run_id, f"Applying API cutoff from={_to_gnews_iso(since)}")
 
             for keyword_idx, keyword in enumerate(keyword_queries, start=1):
+                if keyword_idx > 1 and settings.scraping_gnews_inter_request_delay_s > 0:
+                    await asyncio.sleep(settings.scraping_gnews_inter_request_delay_s)
+
                 query = _build_keyword_query(keyword)
                 if len(query) > GNEWS_QUERY_MAX_CHARS:
                     _log(
