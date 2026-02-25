@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """
-Seed "Fonde DK Monitor" brand for a profile email (default: madsrunge@hotmail.dk).
+Seed "Fonde Monitor" brand for a profile email (default: madsrunge@hotmail.dk).
+
+Dækker danske og norske fondsomtaler for en potentiel kunde i fondssektoren.
 
 What it does:
 1) Finds profile by contact_email/email
-2) Creates or reuses the brand
-3) Creates or updates 9 foundation topics
+2) Creates or reuses the brand (with allowed_languages=["da","no"])
+3) Creates or updates topics
 4) Creates missing keywords and links them to topics (idempotent)
 
 Usage:
   python scripts/seed_foundations_monitor.py
-  python scripts/seed_foundations_monitor.py --email madsrunge@hotmail.dk
-  python scripts/seed_foundations_monitor.py --brand-name "Fonde DK Monitor" --frequency-hours 8
+  python scripts/seed_foundations_monitor.py --email kunde@example.dk
+  python scripts/seed_foundations_monitor.py --brand-name "Fonde Monitor" --frequency-hours 8
 """
 
 import argparse
@@ -19,7 +21,7 @@ import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
 
 # Ensure `app` imports work when script is run as `python scripts/...`
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -37,42 +39,54 @@ class TopicSeed:
 
 TOPICS: List[TopicSeed] = [
     TopicSeed(
-        name="Novo Nordisk Fonden",
-        keywords=['"Novo Nordisk Fonden"', '"Novo Nordisk Foundation"'],
+        name="Store danske fonde",
+        keywords=[
+            "Novo Nordisk Fonden",
+            "A P Møller Fonden",
+            "Lundbeckfonden",
+            "Lego Fonden",
+            "Skovsgaards Fond",
+            "Direktør K. W. Bruuns Fond",
+            "Gl. Holtegaard",
+        ],
     ),
     TopicSeed(
-        name="A P Møller Fonden",
-        keywords=['"A.P. Møller Fonden"', '"A P Møller Fonden"'],
+        name="Fondsbranchens organisationer",
+        keywords=[
+            "Fondenes Videnscenter",
+            "Danske Fonde",
+            "Philea",
+        ],
     ),
     TopicSeed(
-        name="Skovsgaards Fond",
-        keywords=['"Skovsgaards Fond"', '"Skovsgaard Fond"'],
+        name="Regulering & lovgivning",
+        keywords=[
+            "Fondslov",
+            "Fondstilsyn",
+            "Fondsmyndighed",
+            "Fondsret",
+        ],
     ),
     TopicSeed(
-        name="Lundbeckfonden",
-        keywords=['"Lundbeckfonden"', '"Lundbeck Foundation"'],
+        name="Uddeling & filantropi",
+        keywords=[
+            "Filantropi",
+            "Uddelinger",
+            "Donationer",
+            "Fondsmidler",
+            "Bevillinger",
+        ],
     ),
     TopicSeed(
-        name="Direktør K. W. Bruuns Fond",
-        keywords=['"Direktør K. W. Bruuns Fond"', '"K. W. Bruuns Fond"'],
-    ),
-    TopicSeed(
-        name="Lego Fonden",
-        keywords=['"Lego Fonden"', '"LEGO Foundation"'],
-    ),
-    TopicSeed(
-        name="Gl. Holtegaard",
-        keywords=['"Gl. Holtegaard"', '"Gammel Holtegaard"'],
-    ),
-    TopicSeed(
-        name="Fondenes Videnscenter",
-        keywords=['"Fondenes Videnscenter"'],
-    ),
-    TopicSeed(
-        name="Danske Fonde",
-        keywords=['"Danske Fonde"', '"danskefonde.dk"'],
+        name="Fondsledelse",
+        keywords=[
+            "Fondsdirektør",
+            "Fondsbestyrelse",
+        ],
     ),
 ]
+
+ALLOWED_LANGUAGES = ["da", "no"]
 
 
 def now_iso() -> str:
@@ -101,6 +115,7 @@ def find_or_create_brand(
     description: str,
     frequency_hours: int,
     lookback_days: int,
+    allowed_languages: List[str],
 ) -> Dict:
     existing = (
         admin.table("brands")
@@ -119,11 +134,12 @@ def find_or_create_brand(
                 "scrape_frequency_hours": frequency_hours,
                 "initial_lookback_days": lookback_days,
                 "is_active": True,
+                "allowed_languages": allowed_languages,
             }
         ).eq("id", brand["id"]).execute()
         refreshed = (
             admin.table("brands")
-            .select("id,name,profile_id,scrape_frequency_hours,initial_lookback_days")
+            .select("id,name,profile_id,scrape_frequency_hours,initial_lookback_days,allowed_languages")
             .eq("id", brand["id"])
             .limit(1)
             .execute()
@@ -140,6 +156,7 @@ def find_or_create_brand(
                 "scrape_frequency_hours": frequency_hours,
                 "initial_lookback_days": lookback_days,
                 "is_active": True,
+                "allowed_languages": allowed_languages,
                 "created_at": now_iso(),
             }
         )
@@ -226,7 +243,7 @@ def seed_foundations(
     admin = get_supabase_admin()
     profile = find_profile_by_email(admin, email)
     profile_id = str(profile["id"])
-    description_value = description or "Overvågning af danske fonde og omtaler i medier"
+    description_value = description or "Overvågning af danske og norske fonde, uddelinger og fondspolitik"
 
     print(f"Profile: {email} (id={profile_id})")
     brand = find_or_create_brand(
@@ -236,9 +253,10 @@ def seed_foundations(
         description=description_value,
         frequency_hours=frequency_hours,
         lookback_days=lookback_days,
+        allowed_languages=ALLOWED_LANGUAGES,
     )
     brand_id = int(brand["id"])
-    print(f"Brand ready: {brand['name']} (id={brand_id})")
+    print(f"Brand ready: {brand['name']} (id={brand_id}, allowed_languages={brand.get('allowed_languages')})")
 
     topic_count = 0
     keyword_links = 0
@@ -258,6 +276,7 @@ def seed_foundations(
     print(f"Brand ID: {brand_id}")
     print(f"Topics processed: {topic_count}")
     print(f"Topic-keyword links processed: {keyword_links}")
+    print(f"Language filter: {ALLOWED_LANGUAGES}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -269,7 +288,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--brand-name",
-        default="Fonde DK Monitor",
+        default="Fonde Monitor",
         help="Brand name to create or update",
     )
     parser.add_argument(
@@ -281,7 +300,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--lookback-days",
         type=int,
-        default=14,
+        default=7,
         help="Initial lookback days for first scrape",
     )
     parser.add_argument(
