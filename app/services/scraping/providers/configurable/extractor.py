@@ -13,6 +13,7 @@ from app.core.selectors import (
     GENERIC_DATE_SELECTORS,
     GENERIC_TITLE_SELECTORS,
 )
+from app.services.scraping.core.date_utils import parse_mention_date
 from .config import _log
 
 for _trafilatura_logger in ("trafilatura", "trafilatura.core", "trafilatura.utils", "trafilatura.xml"):
@@ -188,6 +189,13 @@ def _parse_date_value(date_str: str, scrape_run_id: Optional[str] = None) -> Opt
     if lower_candidate != normalized:
         candidates.append(lower_candidate)
 
+    for candidate in candidates:
+        # First pass: shared date parser used across providers.
+        parsed = parse_mention_date(candidate)
+        if parsed:
+            return parsed
+
+    # Fallback: keep locale-aware parsing behavior for configurable sources.
     for candidate in candidates:
         try:
             parsed = dateparser.parse(candidate, languages=["da", "en"], settings=DATEPARSER_SETTINGS)

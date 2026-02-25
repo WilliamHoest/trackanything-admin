@@ -6,6 +6,7 @@ from time import perf_counter
 import logging
 
 from app.services.scraping.core.domain_utils import get_etld_plus_one
+from app.services.scraping.core.date_utils import parse_mention_date
 from app.services.scraping.core.metrics import observe_http_error, observe_http_request
 from app.services.scraping.core.rate_limit import get_domain_limiter
 
@@ -131,9 +132,8 @@ async def scrape_rss(
                     if not published_parsed:
                         keyword_missing_date += 1
                         continue
-                    try:
-                        published_dt = datetime(*published_parsed[:6], tzinfo=timezone.utc)
-                    except Exception:
+                    published_dt = parse_mention_date(published_parsed)
+                    if published_dt is None:
                         keyword_unparseable_date += 1
                         continue
 

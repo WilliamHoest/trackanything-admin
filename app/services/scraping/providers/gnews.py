@@ -1,10 +1,10 @@
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta, timezone
-from dateutil import parser as dateparser
 import httpx
 import logging
 
 from app.core.config import settings
+from app.services.scraping.core.date_utils import parse_mention_date
 from app.services.scraping.core.http_client import (
     fetch_with_retry, 
     TIMEOUT_SECONDS
@@ -164,20 +164,10 @@ async def scrape_gnews(
                     if not published_at:
                         skipped_missing_date += 1
                         continue
-                    try:
-                        parsed = dateparser.parse(published_at)
-                    except Exception:
-                        skipped_unparseable_date += 1
-                        continue
+                    parsed = parse_mention_date(published_at)
                     if parsed is None:
                         skipped_unparseable_date += 1
                         continue
-
-                    # Ensure UTC-aware
-                    if parsed.tzinfo is None:
-                        parsed = parsed.replace(tzinfo=timezone.utc)
-                    else:
-                        parsed = parsed.astimezone(timezone.utc)
 
                     if parsed < since:
                         skipped_before_cutoff += 1

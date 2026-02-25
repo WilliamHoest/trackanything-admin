@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import asyncio
 import logging
 from time import perf_counter
-from dateutil import parser as dateparser
+from app.services.scraping.core.date_utils import parse_mention_date
 from serpapi import GoogleSearch
 
 from app.core.config import settings
@@ -175,20 +175,7 @@ async def scrape_serpapi(
         skipped_unparseable_date = 0
         for item in news_results:
             raw_date = item.get("date")
-            parsed_dt: Optional[datetime] = None
-
-            if raw_date:
-                try:
-                    # SerpAPI returns relative dates like "2 hours ago" or absolute dates.
-                    parsed_dt = dateparser.parse(raw_date)
-                except Exception:
-                    parsed_dt = None
-
-                if parsed_dt is not None:
-                    if parsed_dt.tzinfo is None:
-                        parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
-                    else:
-                        parsed_dt = parsed_dt.astimezone(timezone.utc)
+            parsed_dt: Optional[datetime] = parse_mention_date(raw_date)
 
             # Strict mode when cutoff is active:
             # require a parseable date and enforce exact cutoff.

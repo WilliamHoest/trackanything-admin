@@ -9,6 +9,7 @@ from app.services.scraping.providers.gnews import scrape_gnews
 from app.services.scraping.providers.serpapi import scrape_serpapi
 from app.services.scraping.providers.configurable import scrape_configurable_sources
 from app.services.scraping.providers.rss import scrape_rss
+from app.services.scraping.core.date_utils import parse_mention_date, is_within_interval
 from app.services.scraping.core.text_processing import (
     normalize_url,
     get_platform_from_url,
@@ -218,6 +219,19 @@ async def fetch_all_mentions(
             all_mentions.extend(result)
         else:
             _run_log(scrape_run_id, f"{source}: unexpected result type {type(result)}", logging.WARNING)
+
+    # Apply global date interval filter
+    interval_filtered_mentions = []
+    for mention in all_mentions:
+        raw_date = mention.get("published_parsed") or mention.get("date")
+        parsed_dt = parse_mention_date(raw_date)
+        
+        if from_date is not None and parsed_dt is not None:
+            if not is_within_interval(parsed_dt, from_date):
+                continue
+        interval_filtered_mentions.append(mention)
+    
+    all_mentions = interval_filtered_mentions
 
     # Deduplicate based on normalized URLs
     seen_links = set()

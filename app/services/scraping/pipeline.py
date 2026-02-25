@@ -5,10 +5,9 @@ from datetime import datetime, timedelta, timezone
 from time import perf_counter
 from typing import Dict, List, Optional, Tuple
 
-from dateutil import parser as dateparser
-
 from app.core.config import settings
 from app.crud.supabase_crud import SupabaseCRUD
+from app.services.scraping.core.date_utils import parse_mention_date
 from app.services.scraping.core.deduplication import filter_mentions_against_historical
 from app.services.scraping.core.metrics import observe_duplicates_removed, observe_scrape_run
 from app.services.scraping.core.text_processing import sanitize_search_input
@@ -87,49 +86,17 @@ def score_topic_match(topic_keywords: List[Dict], title: str, teaser: str) -> Tu
 
 
 def _normalize_last_scraped_at(last_scraped_at: object) -> Optional[datetime]:
-    if isinstance(last_scraped_at, datetime):
-        parsed = last_scraped_at
-    elif isinstance(last_scraped_at, str):
-        parsed = dateparser.parse(last_scraped_at)
-    else:
-        return None
-
-    if parsed is None:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+    return parse_mention_date(last_scraped_at)
 
 
 def _extract_published_datetime(mention: Dict) -> Optional[datetime]:
     published_parsed = mention.get("published_parsed")
     if published_parsed:
-        try:
-            if isinstance(published_parsed, (list, tuple)) and len(published_parsed) >= 6:
-                return datetime(*published_parsed[:6], tzinfo=timezone.utc)
-            return datetime(
-                published_parsed.tm_year,
-                published_parsed.tm_mon,
-                published_parsed.tm_mday,
-                published_parsed.tm_hour,
-                published_parsed.tm_min,
-                published_parsed.tm_sec,
-                tzinfo=timezone.utc,
-            )
-        except Exception:
-            return None
+        return parse_mention_date(published_parsed)
 
     published_at = mention.get("published_at")
     if isinstance(published_at, str):
-        try:
-            parsed = dateparser.parse(published_at)
-            if parsed is None:
-                return None
-            if parsed.tzinfo is None:
-                return parsed.replace(tzinfo=timezone.utc)
-            return parsed.astimezone(timezone.utc)
-        except Exception:
-            return None
+        return parse_mention_date(published_at)
 
     return None
 
