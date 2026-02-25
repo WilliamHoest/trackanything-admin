@@ -86,7 +86,7 @@ TOPICS: List[TopicSeed] = [
     ),
 ]
 
-ALLOWED_LANGUAGES = ["da", "no"]
+ALLOWED_LANGUAGES = ["da", "en"]
 
 
 def now_iso() -> str:
@@ -300,7 +300,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--lookback-days",
         type=int,
-        default=7,
+        default=14,
         help="Initial lookback days for first scrape",
     )
     parser.add_argument(
