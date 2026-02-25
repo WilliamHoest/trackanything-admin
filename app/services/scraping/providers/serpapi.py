@@ -2,7 +2,7 @@ import asyncio
 import logging
 from time import perf_counter
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from app.services.scraping.core.date_utils import parse_mention_date
 from serpapi import GoogleSearch
@@ -16,8 +16,8 @@ from app.services.scraping.core.text_processing import chunk_or_queries, clean_k
 logger = logging.getLogger("scraping")
 SERPAPI_BASE_URL = "https://serpapi.com"
 SERPAPI_ENGINE = "google_news"
-SERPAPI_FALLBACK_ENGINE = "google"
 SERPAPI_QUERY_MAX_CHARS = 220
+SERPAPI_MAX_RESULTS_PER_QUERY = 20
 SERPAPI_DEFAULT_HL = "da"
 SERPAPI_DEFAULT_GL = "dk"
 SERPAPI_DEFAULT_GOOGLE_DOMAIN = "google.dk"
@@ -82,6 +82,25 @@ def _effective_query_max_chars(from_date: Optional[datetime]) -> int:
     return max(1, SERPAPI_QUERY_MAX_CHARS - SERPAPI_AFTER_PADDING_CHARS)
 
 
+def _dedupe_keywords(keywords: List[str]) -> List[str]:
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for keyword in keywords:
+        normalized = keyword.strip()
+        if not normalized:
+            continue
+        token = normalized.lower()
+        if token in seen:
+            continue
+        seen.add(token)
+        deduped.append(normalized)
+    return deduped
+
+
+def _build_keyword_query(keyword: str) -> str:
+    return f"\"{keyword}\"" if " " in keyword else keyword
+
+
 def _detect_limit_signal(error_message: str) -> Optional[str]:
     message = (error_message or "").lower()
     if not message:
@@ -103,24 +122,6 @@ def _detect_limit_signal(error_message: str) -> Optional[str]:
 def _is_no_results_error(error_message: str) -> bool:
     message = (error_message or "").lower()
     return "no results" in message or "hasn't returned any results" in message
-
-
-def _build_attempt_params(base_params: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
-    """
-    Try Google News first, then fallback to Google News vertical (tbm=nws).
-    """
-    attempts: List[Tuple[str, Dict[str, Any]]] = []
-
-    primary = dict(base_params)
-    primary["engine"] = SERPAPI_ENGINE
-    attempts.append((SERPAPI_ENGINE, primary))
-
-    fallback = dict(base_params)
-    fallback["engine"] = SERPAPI_FALLBACK_ENGINE
-    fallback["tbm"] = "nws"
-    attempts.append((f"{SERPAPI_FALLBACK_ENGINE}+tbm=nws", fallback))
-
-    return attempts
 
 
 def _extract_results(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -155,6 +156,7 @@ async def scrape_serpapi(
     keywords: List[str],
     from_date: Optional[datetime] = None,
     scrape_run_id: Optional[str] = None,
+    allowed_languages: Optional[List[str]] = None,
 ) -> List[Dict]:
     """
     Fetch articles from SerpAPI (Google News).
@@ -166,13 +168,20 @@ async def scrape_serpapi(
     if not keywords:
         return []
 
+    effective_query_max = _effective_query_max_chars(from_date)
     cleaned = clean_keywords(keywords)
-    query_chunks = chunk_or_queries(cleaned, _effective_query_max_chars(from_date))
+    query_keywords = _dedupe_keywords(cleaned)
+    if not query_keywords:
+        _log(scrape_run_id, "No valid keywords after cleaning.", logging.WARNING)
+        return []
+
+    query_terms = [_build_keyword_query(keyword) for keyword in query_keywords]
+    query_chunks = chunk_or_queries(query_terms, effective_query_max)
     if not query_chunks:
         _log(scrape_run_id, "No valid query chunks after keyword cleaning.", logging.WARNING)
         return []
 
-    oversized_keywords = [kw for kw in cleaned if len(kw) > _effective_query_max_chars(from_date)]
+    oversized_keywords = [kw for kw in query_terms if len(kw) > effective_query_max]
     if oversized_keywords:
         _log(
             scrape_run_id,
@@ -194,7 +203,7 @@ async def scrape_serpapi(
             scrape_run_id,
             (
                 f"Scraping {len(keywords)} keywords across "
-                f"{len(query_chunks)} chunk(s)"
+                f"{len(query_chunks)} OR-batched query chunk(s)"
             ),
         )
 
@@ -209,128 +218,107 @@ async def scrape_serpapi(
         skipped_before_cutoff = 0
         skipped_missing_date = 0
         skipped_unparseable_date = 0
-        failed_chunks = 0
-        empty_chunks = 0
+        failed_queries = 0
+        empty_queries = 0
 
-        for chunk_idx, query in enumerate(query_chunks, start=1):
+        for query_idx, query in enumerate(query_chunks, start=1):
             provider_query = _apply_after_operator(query, from_date_utc)
             _log(
                 scrape_run_id,
                 (
-                    f"Query chunk {chunk_idx}/{len(query_chunks)} "
+                    f"Query chunk {query_idx}/{len(query_chunks)} "
                     f"(chars={len(provider_query)}): {provider_query[:220]}"
                 ),
                 logging.DEBUG,
             )
 
-            base_params: Dict[str, Any] = {
+            params: Dict[str, Any] = {
                 "q": provider_query,
                 "api_key": settings.serpapi_key,
                 "num": 20,
                 "hl": SERPAPI_DEFAULT_HL,
                 "gl": SERPAPI_DEFAULT_GL,
                 "google_domain": SERPAPI_DEFAULT_GOOGLE_DOMAIN,
+                "engine": SERPAPI_ENGINE,
             }
             if tbs:
-                base_params["tbs"] = tbs
+                params["tbs"] = tbs
 
-            attempts = _build_attempt_params(base_params)
-            chunk_results: List[Dict[str, Any]] = []
-            chunk_hard_failure = False
+            def run_search(current_params: Dict[str, Any]):
+                search = GoogleSearch(current_params)
+                return search.get_dict()
 
-            for attempt_idx, (engine_label, params) in enumerate(attempts, start=1):
-                _log(
-                    scrape_run_id,
-                    (
-                        f"Chunk {chunk_idx}/{len(query_chunks)} attempt {attempt_idx}/{len(attempts)} "
-                        f"using engine={engine_label}"
-                    ),
-                    logging.DEBUG,
-                )
+            request_started_at = perf_counter()
+            async with limiter:
+                results = await asyncio.to_thread(run_search, params)
+            status_code = "200" if "error" not in results else "api_error"
+            request_duration = perf_counter() - request_started_at
+            observe_http_request(
+                provider="serpapi",
+                domain=etld1,
+                status_code=status_code,
+                duration_seconds=request_duration,
+            )
 
-                def run_search(current_params: Dict[str, Any]):
-                    search = GoogleSearch(current_params)
-                    return search.get_dict()
+            metadata = results.get("search_metadata", {})
+            meta_status = metadata.get("status", "unknown")
+            candidate_results = _extract_results(results)[:SERPAPI_MAX_RESULTS_PER_QUERY]
+            _log(
+                scrape_run_id,
+                (
+                    f"Query chunk {query_idx}/{len(query_chunks)} "
+                    f"engine={SERPAPI_ENGINE} response: "
+                    f"status={meta_status}, http_metric={status_code}, "
+                    f"duration={request_duration:.2f}s, results={len(candidate_results)}"
+                ),
+            )
 
-                request_started_at = perf_counter()
-                async with limiter:
-                    results = await asyncio.to_thread(run_search, params)
-                status_code = "200" if "error" not in results else "api_error"
-                request_duration = perf_counter() - request_started_at
-                observe_http_request(
-                    provider="serpapi",
-                    domain=etld1,
-                    status_code=status_code,
-                    duration_seconds=request_duration,
-                )
-
-                metadata = results.get("search_metadata", {})
-                meta_status = metadata.get("status", "unknown")
-                candidate_results = _extract_results(results)
-                _log(
-                    scrape_run_id,
-                    (
-                        f"Chunk {chunk_idx}/{len(query_chunks)} engine={engine_label} response: "
-                        f"status={meta_status}, http_metric={status_code}, "
-                        f"duration={request_duration:.2f}s, results={len(candidate_results)}"
-                    ),
-                )
-
-                if "error" in results:
-                    error_message = str(results.get("error", "Unknown SerpAPI error"))
-                    limit_signal = _detect_limit_signal(error_message)
-                    if _is_no_results_error(error_message):
-                        observe_http_error(
-                            provider="serpapi",
-                            domain=etld1,
-                            error_type="api_no_results",
-                        )
-                        _log(
-                            scrape_run_id,
-                            (
-                                f"Chunk {chunk_idx}/{len(query_chunks)} engine={engine_label} "
-                                f"returned no results error ({error_message}); trying fallback."
-                            ),
-                            logging.WARNING,
-                        )
-                        continue
-
+            if "error" in results:
+                error_message = str(results.get("error", "Unknown SerpAPI error"))
+                if _is_no_results_error(error_message):
                     observe_http_error(
                         provider="serpapi",
                         domain=etld1,
-                        error_type=f"api_{limit_signal or 'error'}",
+                        error_type="api_no_results",
                     )
-                    if limit_signal:
-                        _log(
-                            scrape_run_id,
-                            f"Possible SerpAPI {limit_signal} detected: {error_message}",
-                            logging.WARNING,
-                        )
-                    else:
-                        _log(scrape_run_id, f"SerpAPI error: {error_message}", logging.ERROR)
+                    empty_queries += 1
+                    _log(
+                        scrape_run_id,
+                        (
+                            f"Query chunk {query_idx}/{len(query_chunks)} returned no results "
+                            f"({error_message})."
+                        ),
+                        logging.WARNING,
+                    )
+                    continue
 
-                    # Hard provider failures (quota/rate-limit/unknown) should stop
-                    # attempts for this chunk to avoid wasting requests.
-                    chunk_hard_failure = True
-                    break
-
-                if candidate_results:
-                    chunk_results = candidate_results
-                    break
-
-            if chunk_hard_failure:
-                failed_chunks += 1
+                limit_signal = _detect_limit_signal(error_message)
+                observe_http_error(
+                    provider="serpapi",
+                    domain=etld1,
+                    error_type=f"api_{limit_signal or 'error'}",
+                )
+                if limit_signal:
+                    _log(
+                        scrape_run_id,
+                        f"Possible SerpAPI {limit_signal} detected: {error_message}",
+                        logging.WARNING,
+                    )
+                else:
+                    _log(scrape_run_id, f"SerpAPI error: {error_message}", logging.ERROR)
+                failed_queries += 1
                 continue
-            if not chunk_results:
-                empty_chunks += 1
+
+            if not candidate_results:
+                empty_queries += 1
                 _log(
                     scrape_run_id,
-                    f"Chunk {chunk_idx}/{len(query_chunks)} produced no results after all attempts.",
+                    f"Query chunk {query_idx}/{len(query_chunks)} produced no results.",
                     logging.DEBUG,
                 )
                 continue
 
-            for item in chunk_results:
+            for item in candidate_results:
                 # Prefer absolute timestamps when available for strict interval accuracy.
                 raw_date = item.get("iso_date") or item.get("published_at") or item.get("date")
                 parsed_dt: Optional[datetime] = parse_mention_date(raw_date)
@@ -389,8 +377,8 @@ async def scrape_serpapi(
                 f"(skipped_before_cutoff={skipped_before_cutoff}, "
                 f"skipped_missing_date={skipped_missing_date}, "
                 f"skipped_unparseable_date={skipped_unparseable_date}, "
-                f"failed_chunks={failed_chunks}, "
-                f"empty_chunks={empty_chunks})"
+                f"failed_queries={failed_queries}, "
+                f"empty_queries={empty_queries})"
             ),
         )
         return mentions

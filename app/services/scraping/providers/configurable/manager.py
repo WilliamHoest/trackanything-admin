@@ -32,6 +32,7 @@ async def scrape_configurable_sources(
     max_articles_per_source: int = DEFAULT_MAX_ARTICLES_PER_SOURCE,
     from_date: Optional[datetime] = None,
     scrape_run_id: Optional[str] = None,
+    allowed_languages: Optional[List[str]] = None,
 ) -> List[Dict]:
     """Universal scraper that works with all configured sources."""
     if not keywords:

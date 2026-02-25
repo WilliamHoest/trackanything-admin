@@ -28,5 +28,6 @@ dateparser
 trafilatura
 playwright
 rapidfuzz
+langdetect==1.0.9
 openai  # Used for DeepSeek API (OpenAI-compatible)
 google-search-results

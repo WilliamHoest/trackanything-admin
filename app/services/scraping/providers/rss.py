@@ -32,6 +32,7 @@ async def scrape_rss(
     keywords: List[str],
     from_date: Optional[datetime] = None,
     scrape_run_id: Optional[str] = None,
+    allowed_languages: Optional[List[str]] = None,
 ) -> List[Dict]:
     """
     Scrape Google News RSS search feeds for a keyword set.

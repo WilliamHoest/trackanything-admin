@@ -16,11 +16,16 @@ from app.services.scraping.core.text_processing import (
     clean_keywords,
 )
 from app.services.scraping.core.deduplication import near_deduplicate_mentions
+from app.services.scraping.core.language_filter import filter_by_language
 from app.services.scraping.analyzers.relevance_filter import relevance_filter
 from app.services.scraping.core.metrics import (
     observe_duplicates_removed,
     observe_guardrail_event,
     observe_provider_run,
+)
+from app.services.scraping.core.run_artifacts import (
+    write_mentions_snapshot,
+    write_run_metadata,
 )
 from app.core.config import settings
 
@@ -62,7 +67,9 @@ async def fetch_all_mentions(
     keywords: List[str],
     lookback_days: int = 1,
     from_date: datetime = None,
-    scrape_run_id: Optional[str] = None
+    scrape_run_id: Optional[str] = None,
+    allowed_languages: Optional[List[str]] = None,
+    artifact_label: Optional[str] = None,
 ) -> List[Dict]:
     """
     Fetch mentions from all sources in parallel using asyncio.gather.
@@ -107,15 +114,34 @@ async def fetch_all_mentions(
     _run_log(scrape_run_id, f"Starting parallel scraping with {len(sanitized_keywords)} keywords")
     _run_log(scrape_run_id, f"Keywords: {sanitized_keywords}", logging.DEBUG)
     _run_log(scrape_run_id, f"Fetching articles from {from_date.isoformat()}")
+    provider_toggles = {
+        "gnews": settings.scraping_provider_gnews_enabled,
+        "serpapi": settings.scraping_provider_serpapi_enabled,
+        "configurable": settings.scraping_provider_configurable_enabled,
+        "rss": settings.scraping_provider_rss_enabled,
+    }
     _run_log(
         scrape_run_id,
         (
             "Provider toggles: "
-            f"gnews={settings.scraping_provider_gnews_enabled}, "
-            f"serpapi={settings.scraping_provider_serpapi_enabled}, "
-            f"configurable={settings.scraping_provider_configurable_enabled}, "
-            f"rss={settings.scraping_provider_rss_enabled}"
+            f"gnews={provider_toggles['gnews']}, "
+            f"serpapi={provider_toggles['serpapi']}, "
+            f"configurable={provider_toggles['configurable']}, "
+            f"rss={provider_toggles['rss']}"
         ),
+    )
+    write_run_metadata(
+        scrape_run_id,
+        {
+            "run_id": scrape_run_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "keywords": sanitized_keywords,
+            "keyword_count": len(sanitized_keywords),
+            "from_date": from_date.isoformat(),
+            "lookback_days": lookback_days,
+            "provider_toggles": provider_toggles,
+        },
+        artifact_label=artifact_label,
     )
 
     async def _run_provider(provider_name: str, provider_coro):
@@ -153,7 +179,7 @@ async def fetch_all_mentions(
             (
                 "gnews",
                 "GNews",
-                scrape_gnews(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
+                scrape_gnews(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id, allowed_languages=allowed_languages),
             )
         )
     else:
@@ -165,7 +191,7 @@ async def fetch_all_mentions(
             (
                 "serpapi",
                 "SerpAPI",
-                scrape_serpapi(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
+                scrape_serpapi(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id, allowed_languages=allowed_languages),
             )
         )
     else:
@@ -177,7 +203,7 @@ async def fetch_all_mentions(
             (
                 "configurable",
                 "Configurable Sources",
-                scrape_configurable_sources(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
+                scrape_configurable_sources(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id, allowed_languages=allowed_languages),
             )
         )
     else:
@@ -189,7 +215,7 @@ async def fetch_all_mentions(
             (
                 "rss",
                 "RSS Feed",
-                scrape_rss(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id),
+                scrape_rss(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id, allowed_languages=allowed_languages),
             )
         )
     else:
@@ -209,19 +235,64 @@ async def fetch_all_mentions(
     )
 
     # Collect all mentions, handling exceptions
-    all_mentions = []
+    all_mentions: List[Dict[str, Any]] = []
+    provider_outcomes: List[Dict[str, Any]] = []
     for idx, result in enumerate(results):
-        source = enabled_providers[idx][1]
+        provider_name, source, _provider_coro = enabled_providers[idx]
         if isinstance(result, Exception):
             _run_log(scrape_run_id, f"{source} scraping failed with exception: {result}", logging.ERROR)
+            provider_outcomes.append(
+                {
+                    "provider": provider_name,
+                    "source": source,
+                    "status": "exception",
+                    "error": str(result),
+                    "mentions": 0,
+                }
+            )
         elif isinstance(result, list):
             _run_log(scrape_run_id, f"{source}: found {len(result)} articles")
-            all_mentions.extend(result)
+            annotated_mentions: List[Dict[str, Any]] = []
+            for mention in result:
+                if not isinstance(mention, dict):
+                    continue
+                enriched = dict(mention)
+                enriched.setdefault("source_provider", provider_name)
+                enriched.setdefault("source_label", source)
+                annotated_mentions.append(enriched)
+            provider_outcomes.append(
+                {
+                    "provider": provider_name,
+                    "source": source,
+                    "status": "success",
+                    "mentions": len(annotated_mentions),
+                }
+            )
+            all_mentions.extend(annotated_mentions)
         else:
             _run_log(scrape_run_id, f"{source}: unexpected result type {type(result)}", logging.WARNING)
+            provider_outcomes.append(
+                {
+                    "provider": provider_name,
+                    "source": source,
+                    "status": "unexpected_result",
+                    "mentions": 0,
+                    "result_type": str(type(result)),
+                }
+            )
+
+    write_mentions_snapshot(
+        scrape_run_id,
+        "01_raw_provider_output",
+        all_mentions,
+        metadata={"providers": provider_outcomes},
+        artifact_label=artifact_label,
+    )
 
     # Apply global date interval filter
     interval_filtered_mentions = []
+    date_filter_removed_missing_or_unparseable = 0
+    date_filter_removed_before_cutoff = 0
     for mention in all_mentions:
         raw_date = mention.get("published_parsed") or mention.get("date")
         parsed_dt = parse_mention_date(raw_date)
@@ -244,13 +315,26 @@ async def fetch_all_mentions(
             # Strict guardrail: require a parseable date when interval filtering is active.
             if parsed_dt is None:
                 _run_log(scrape_run_id, f"Global date filter skipped {mention_link}: unparseable/missing date", logging.DEBUG)
+                date_filter_removed_missing_or_unparseable += 1
                 continue
             if not within_interval:
                 _run_log(scrape_run_id, f"Global date filter skipped {mention_link}: before cutoff", logging.DEBUG)
+                date_filter_removed_before_cutoff += 1
                 continue
         interval_filtered_mentions.append(mention)
     
     all_mentions = interval_filtered_mentions
+    write_mentions_snapshot(
+        scrape_run_id,
+        "02_after_global_date_filter",
+        all_mentions,
+        metadata={
+            "removed_missing_or_unparseable_date": date_filter_removed_missing_or_unparseable,
+            "removed_before_cutoff": date_filter_removed_before_cutoff,
+            "cutoff": from_date.isoformat() if from_date else None,
+        },
+        artifact_label=artifact_label,
+    )
 
     # Deduplicate based on normalized URLs
     seen_links = set()
@@ -272,6 +356,13 @@ async def fetch_all_mentions(
 
     url_duplicates_removed = len(all_mentions) - len(unique_mentions)
     observe_duplicates_removed(stage="url", count=url_duplicates_removed)
+    write_mentions_snapshot(
+        scrape_run_id,
+        "03_after_url_dedup",
+        unique_mentions,
+        metadata={"url_duplicates_removed": url_duplicates_removed},
+        artifact_label=artifact_label,
+    )
 
     dedupe_threshold = settings.scraping_fuzzy_dedup_threshold
     dedupe_day_window = settings.scraping_fuzzy_dedup_day_window
@@ -286,6 +377,28 @@ async def fetch_all_mentions(
 
     observe_duplicates_removed(stage="fuzzy", count=fuzzy_duplicates_removed)
     duplicates_removed = url_duplicates_removed + fuzzy_duplicates_removed
+    write_mentions_snapshot(
+        scrape_run_id,
+        "04_after_fuzzy_dedup",
+        unique_mentions,
+        metadata={
+            "fuzzy_duplicates_removed": fuzzy_duplicates_removed,
+            "url_duplicates_removed": url_duplicates_removed,
+            "total_duplicates_removed": duplicates_removed,
+            "fuzzy_threshold": dedupe_threshold,
+            "fuzzy_day_window": dedupe_day_window,
+        },
+        artifact_label=artifact_label,
+    )
+
+    # Language filtering (after dedup, before AI relevance filter)
+    if settings.scraping_language_filter_enabled and allowed_languages:
+        unique_mentions, lang_removed = filter_by_language(
+            unique_mentions, allowed_languages, scrape_run_id=scrape_run_id
+        )
+        observe_duplicates_removed(stage="language_filter", count=lang_removed)
+        _run_log(scrape_run_id, f"Language filter removed {lang_removed} mentions (allowed={allowed_languages})")
+
     _run_log(
         scrape_run_id,
         (
@@ -303,7 +416,9 @@ async def fetch_and_filter_mentions(
     apply_relevance_filter: bool = True,
     lookback_days: int = 1,
     from_date: datetime = None,
-    scrape_run_id: Optional[str] = None
+    scrape_run_id: Optional[str] = None,
+    allowed_languages: Optional[List[str]] = None,
+    artifact_label: Optional[str] = None,
 ) -> List[Dict]:
     """
     Fetch mentions from all sources and optionally filter by AI relevance.
@@ -328,11 +443,21 @@ async def fetch_and_filter_mentions(
         sanitized_keywords,
         lookback_days=lookback_days,
         from_date=from_date,
-        scrape_run_id=scrape_run_id
+        scrape_run_id=scrape_run_id,
+        allowed_languages=allowed_languages,
+        artifact_label=artifact_label,
     )
 
     if not mentions:
         return []
+
+    write_mentions_snapshot(
+        scrape_run_id,
+        "05_before_ai_filter",
+        mentions,
+        metadata={"apply_relevance_filter": apply_relevance_filter},
+        artifact_label=artifact_label,
+    )
 
     # Step 2: Apply AI relevance filter if enabled
     if not AI_RELEVANCE_FILTER_ENABLED:
@@ -342,6 +467,13 @@ async def fetch_and_filter_mentions(
                 "AI relevance filter is temporarily disabled. Returning unfiltered mentions.",
                 logging.WARNING
             )
+        write_mentions_snapshot(
+            scrape_run_id,
+            "06_after_ai_filter_skipped",
+            mentions,
+            metadata={"reason": "ai_filter_disabled"},
+            artifact_label=artifact_label,
+        )
         return mentions
 
     if apply_relevance_filter and sanitized_keywords:
@@ -352,6 +484,24 @@ async def fetch_and_filter_mentions(
             scrape_run_id,
             f"Relevance filter: kept {len(filtered_mentions)} mentions ({filtered_count} filtered out)"
         )
+        write_mentions_snapshot(
+            scrape_run_id,
+            "06_after_ai_filter",
+            filtered_mentions,
+            metadata={
+                "input_mentions": len(mentions),
+                "kept_mentions": len(filtered_mentions),
+                "filtered_out": filtered_count,
+            },
+            artifact_label=artifact_label,
+        )
         return filtered_mentions
 
+    write_mentions_snapshot(
+        scrape_run_id,
+        "06_after_ai_filter_skipped",
+        mentions,
+        metadata={"reason": "apply_relevance_filter_false_or_no_keywords"},
+        artifact_label=artifact_label,
+    )
     return mentions

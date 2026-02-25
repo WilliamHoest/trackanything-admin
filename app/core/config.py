@@ -36,7 +36,15 @@ class Settings(BaseSettings):
     scraping_fuzzy_dedup_enabled: bool = True
     scraping_fuzzy_dedup_threshold: int = 92
     scraping_fuzzy_dedup_day_window: int = 2
-    
+    scraping_run_artifacts_enabled: bool = True
+    scraping_run_artifacts_max_mentions: int = 500
+    scraping_language_filter_enabled: bool = True
+    scraping_default_languages: str = "da,no,sv,en"
+
+    @property
+    def scraping_default_languages_list(self) -> List[str]:
+        return [lang.strip() for lang in self.scraping_default_languages.split(",") if lang.strip()]
+
     @property
     def allowed_origins_list(self) -> List[str]:
         return [origin.strip() for origin in self.allowed_origins.split(",")]

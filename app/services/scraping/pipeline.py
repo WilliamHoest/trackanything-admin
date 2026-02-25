@@ -203,11 +203,16 @@ async def process_brand_scrape(
             from_date = datetime.now(timezone.utc) - timedelta(days=lookback_days)
             _log(scrape_run_id, f"First scrape - looking back {lookback_days} day(s) to {from_date.isoformat()}")
 
+        # Brand-level language filter; falls back to global default
+        brand_languages = brand.get("allowed_languages") or settings.scraping_default_languages_list
+
         mentions = await fetch_and_filter_mentions(
             query_list,
             apply_relevance_filter=apply_relevance_filter,
             from_date=from_date,
             scrape_run_id=scrape_run_id,
+            allowed_languages=brand_languages,
+            artifact_label=brand_name,
         )
 
         if settings.scraping_historical_dedup_enabled and mentions:
