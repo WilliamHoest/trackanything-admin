@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 try:
     from rapidfuzz import fuzz
@@ -13,6 +13,7 @@ from app.services.scraping.core.domain_utils import get_etld_plus_one
 
 
 _TITLE_WORD_PATTERN = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+_GOOGLE_NEWS_ETLD1 = "news.google.com"
 
 
 def _fuzzy_score(left: str, right: str) -> float:
@@ -80,6 +81,10 @@ def _comparison_text(mention: Dict) -> str:
     return title or teaser
 
 
+def _should_cross_domain_compare(left_domain: str, right_domain: str) -> bool:
+    return left_domain == _GOOGLE_NEWS_ETLD1 or right_domain == _GOOGLE_NEWS_ETLD1
+
+
 def near_deduplicate_mentions(
     mentions: List[Dict],
     threshold: int = 92,
@@ -90,6 +95,7 @@ def near_deduplicate_mentions(
 
     Blocking (cheap pre-filter):
     - Same eTLD+1
+    - Cross-domain compare when one side is news.google.com
     - Same title signature (first tokens)
     - Published date within +/- day_window days when both dates are available
 
@@ -104,8 +110,11 @@ def near_deduplicate_mentions(
     day_delta = timedelta(days=safe_day_window)
 
     unique_mentions: List[Dict] = []
-    # key: (domain, signature) -> indices into unique_mentions
-    buckets: Dict[Tuple[str, str], List[int]] = {}
+    unique_domains: List[str] = []
+    # Fast exact-domain blocking.
+    buckets_by_domain_signature: Dict[Tuple[str, str], List[int]] = {}
+    # Cross-domain fallback blocking for Google News wrapper links.
+    buckets_by_signature: Dict[str, List[int]] = {}
     removed = 0
 
     for mention in mentions:
@@ -121,11 +130,16 @@ def near_deduplicate_mentions(
             or ""
         )
         signature = _title_signature(normalized_text)
-        bucket_key = (domain, signature)
         mention_dt = _mention_published_at(mention)
 
         is_duplicate = False
-        candidate_indices = buckets.get(bucket_key, [])
+        candidate_indices: Set[int] = set(
+            buckets_by_domain_signature.get((domain, signature), [])
+        )
+        for idx in buckets_by_signature.get(signature, []):
+            if _should_cross_domain_compare(domain, unique_domains[idx]):
+                candidate_indices.add(idx)
+
         for idx in candidate_indices:
             candidate = unique_mentions[idx]
             candidate_text = _normalize_title(_comparison_text(candidate))
@@ -146,7 +160,10 @@ def near_deduplicate_mentions(
             continue
 
         unique_mentions.append(mention)
-        buckets.setdefault(bucket_key, []).append(len(unique_mentions) - 1)
+        unique_domains.append(domain)
+        mention_idx = len(unique_mentions) - 1
+        buckets_by_domain_signature.setdefault((domain, signature), []).append(mention_idx)
+        buckets_by_signature.setdefault(signature, []).append(mention_idx)
 
     return unique_mentions, removed
 
@@ -163,6 +180,7 @@ def filter_mentions_against_historical(
 
     Uses same blocking model as near_deduplicate_mentions:
     - eTLD+1
+    - cross-domain compare when one side is news.google.com
     - title signature
     - optional published date window when both dates exist
     """
@@ -173,7 +191,9 @@ def filter_mentions_against_historical(
     safe_day_window = max(0, int(day_window))
     day_delta = timedelta(days=safe_day_window)
 
-    historical_buckets: Dict[Tuple[str, str], List[Tuple[str, Optional[datetime]]]] = {}
+    historical_entries: List[Tuple[str, Optional[datetime], str]] = []
+    historical_domain_buckets: Dict[Tuple[str, str], List[int]] = {}
+    historical_signature_buckets: Dict[str, List[int]] = {}
     for mention in historical_mentions:
         text = _normalize_title(_comparison_text(mention))
         if not text:
@@ -184,10 +204,12 @@ def filter_mentions_against_historical(
             or ""
         )
         signature = _title_signature(text)
-        key = (domain, signature)
-        historical_buckets.setdefault(key, []).append((text, _mention_published_at(mention)))
+        historical_entries.append((text, _mention_published_at(mention), domain))
+        mention_idx = len(historical_entries) - 1
+        historical_domain_buckets.setdefault((domain, signature), []).append(mention_idx)
+        historical_signature_buckets.setdefault(signature, []).append(mention_idx)
 
-    if not historical_buckets:
+    if not historical_entries:
         return new_mentions, 0
 
     filtered: List[Dict] = []
@@ -205,12 +227,17 @@ def filter_mentions_against_historical(
             or ""
         )
         signature = _title_signature(text)
-        key = (domain, signature)
         mention_dt = _mention_published_at(mention)
-        candidates = historical_buckets.get(key, [])
+        candidate_indices: Set[int] = set(
+            historical_domain_buckets.get((domain, signature), [])
+        )
+        for idx in historical_signature_buckets.get(signature, []):
+            if _should_cross_domain_compare(domain, historical_entries[idx][2]):
+                candidate_indices.add(idx)
 
         is_duplicate = False
-        for candidate_text, candidate_dt in candidates:
+        for idx in candidate_indices:
+            candidate_text, candidate_dt, _candidate_domain = historical_entries[idx]
             if mention_dt and candidate_dt and abs(mention_dt - candidate_dt) > day_delta:
                 continue
             score = _fuzzy_score(text, candidate_text)

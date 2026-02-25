@@ -1,4 +1,5 @@
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -45,23 +46,47 @@ def build_search_query(topic: Dict, keyword_text: str, brand_name: str) -> str:
     return sanitize_search_input(topic.get("name", ""))
 
 
+def _build_keyword_boundary_pattern(keyword_text: str) -> Tuple[Optional[re.Pattern], str]:
+    cleaned = sanitize_search_input(keyword_text)
+    if not cleaned:
+        return None, ""
+
+    tokens = [re.escape(token) for token in cleaned.split() if token]
+    if not tokens:
+        return None, ""
+
+    phrase = r"[\s\W_]+".join(tokens)
+    return re.compile(rf"(?<!\w){phrase}(?!\w)", re.IGNORECASE), cleaned.lower()
+
+
 def score_topic_match(topic_keywords: List[Dict], title: str, teaser: str) -> Tuple[int, List[Dict]]:
     matches = []
     score = 0
 
     for keyword in topic_keywords:
-        keyword_text = keyword.get("text", "").lower()
+        keyword_text = keyword.get("text", "")
         if not keyword_text:
             continue
 
-        in_title = keyword_text in title
-        in_teaser = keyword_text in teaser
+        if "_compiled_pattern" not in keyword:
+            cached_pattern, normalized_keyword = _build_keyword_boundary_pattern(keyword_text)
+            keyword["_compiled_pattern"] = cached_pattern
+            keyword["_normalized_keyword"] = normalized_keyword
+        else:
+            cached_pattern = keyword.get("_compiled_pattern")
+            normalized_keyword = keyword.get("_normalized_keyword", "")
+
+        if cached_pattern is None:
+            continue
+
+        in_title = bool(cached_pattern.search(title))
+        in_teaser = bool(cached_pattern.search(teaser))
         if not (in_title or in_teaser):
             continue
 
         matched_in = "both" if in_title and in_teaser else "title" if in_title else "teaser"
         keyword_score = (2 if in_title else 0) + (1 if in_teaser else 0)
-        if len(keyword_text) >= 8:
+        if len(normalized_keyword) >= 8:
             keyword_score += 1
 
         matches.append(

@@ -24,7 +24,7 @@ from app.services.scraping.core.metrics import (
 )
 from app.core.config import settings
 
-AI_RELEVANCE_FILTER_TEMP_DISABLED = True
+AI_RELEVANCE_FILTER_ENABLED = True
 logger = logging.getLogger("scraping")
 
 
@@ -335,7 +335,7 @@ async def fetch_and_filter_mentions(
         return []
 
     # Step 2: Apply AI relevance filter if enabled
-    if AI_RELEVANCE_FILTER_TEMP_DISABLED:
+    if not AI_RELEVANCE_FILTER_ENABLED:
         if apply_relevance_filter:
             _run_log(
                 scrape_run_id,

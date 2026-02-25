@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import uuid
 from typing import List
@@ -136,19 +137,24 @@ async def scrape_user(
                 errors=["All brands are inactive"]
             )
 
-        # Process each active brand
-        for brand in active_brands:
-            try:
-                result = await scrape_brand(brand["id"], crud, current_user)
-                brand_results.append(result)
-                total_mentions_found += result.mentions_found
-                total_mentions_saved += result.mentions_saved
-                global_errors.extend(result.errors)
+        # Process active brands in parallel to avoid serial run-time growth.
+        scrape_tasks = [
+            scrape_brand(brand["id"], crud, current_user)
+            for brand in active_brands
+        ]
+        scrape_results = await asyncio.gather(*scrape_tasks, return_exceptions=True)
 
-            except Exception as e:
-                error_msg = f"Failed to process brand '{brand.get('name', 'Unknown')}': {str(e)}"
+        for brand, result in zip(active_brands, scrape_results):
+            if isinstance(result, Exception):
+                error_msg = f"Failed to process brand '{brand.get('name', 'Unknown')}': {str(result)}"
                 global_errors.append(error_msg)
                 scraping_logger.error(error_msg)
+                continue
+
+            brand_results.append(result)
+            total_mentions_found += result.mentions_found
+            total_mentions_saved += result.mentions_saved
+            global_errors.extend(result.errors)
         
         return UserScrapeResponse(
             message=f"Scraping completed for {len(active_brands)} active brands",
