@@ -150,6 +150,7 @@ Thumbs.db
 
 # Logs
 logs/
+json/
 *.log
 
 # Node.js
