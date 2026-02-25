@@ -225,9 +225,28 @@ async def fetch_all_mentions(
     for mention in all_mentions:
         raw_date = mention.get("published_parsed") or mention.get("date")
         parsed_dt = parse_mention_date(raw_date)
-        
-        if from_date is not None and parsed_dt is not None:
-            if not is_within_interval(parsed_dt, from_date):
+        mention_link = mention.get("link", "no-link")
+
+        if from_date is not None:
+            parsed_dt_iso = parsed_dt.isoformat() if parsed_dt else "None"
+            within_interval = bool(parsed_dt and is_within_interval(parsed_dt, from_date))
+            _run_log(
+                scrape_run_id,
+                (
+                    f"Global date filter evaluation for {mention_link}: "
+                    f"raw_date={raw_date!r}, "
+                    f"parsed_date={parsed_dt_iso}, "
+                    f"cutoff={from_date.isoformat()}, "
+                    f"within_interval={within_interval}"
+                ),
+                logging.DEBUG,
+            )
+            # Strict guardrail: require a parseable date when interval filtering is active.
+            if parsed_dt is None:
+                _run_log(scrape_run_id, f"Global date filter skipped {mention_link}: unparseable/missing date", logging.DEBUG)
+                continue
+            if not within_interval:
+                _run_log(scrape_run_id, f"Global date filter skipped {mention_link}: before cutoff", logging.DEBUG)
                 continue
         interval_filtered_mentions.append(mention)
     

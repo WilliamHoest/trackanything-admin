@@ -45,45 +45,36 @@ def clean_keywords(keywords: List[str]) -> List[str]:
     return cleaned
 
 
-def _extract_keyword_terms(keyword: str) -> List[str]:
+def _keyword_to_regex(keyword: str) -> re.Pattern | None:
     """
-    Split keyword text into plain terms only (no phrase support).
+    Build one phrase regex per keyword (no single-word splitting logic).
     """
     cleaned = sanitize_search_input(keyword)
     if not cleaned:
-        return []
+        return None
 
-    deduped: List[str] = []
-    seen = set()
-    for term in cleaned.split():
-        normalized = term.casefold()
-        # Ignore 1-char tokens to avoid noisy matches (e.g., "x")
-        if len(normalized) < 2:
-            continue
-        if normalized in seen:
-            continue
-        seen.add(normalized)
-        deduped.append(term)
-    return deduped
+    tokens = [re.escape(token) for token in cleaned.split() if token]
+    if not tokens:
+        return None
 
-
-def _term_to_regex(term: str) -> re.Pattern:
-    escaped = re.escape(term)
-    pattern = rf"(?<!\w){escaped}(?!\w)"
+    # Allow punctuation/whitespace between phrase tokens so both
+    # "danskefonde.dk" and "danskefonde dk" can match.
+    phrase = r"[\s\W_]+".join(tokens)
+    pattern = rf"(?<!\w){phrase}(?!\w)"
     return re.compile(pattern, re.IGNORECASE)
 
 
 def compile_keyword_patterns(keywords: List[str]) -> List[List[re.Pattern]]:
     """
-    Compile keyword groups as term regex lists.
-    Each input keyword becomes one term-group.
+    Compile keyword groups as phrase regex lists.
+    Each input keyword becomes one phrase-group.
     """
     groups: List[List[re.Pattern]] = []
     for keyword in keywords:
-        terms = _extract_keyword_terms(keyword)
-        if not terms:
+        phrase_pattern = _keyword_to_regex(keyword)
+        if phrase_pattern is None:
             continue
-        groups.append([_term_to_regex(term) for term in terms])
+        groups.append([phrase_pattern])
     return groups
 
 

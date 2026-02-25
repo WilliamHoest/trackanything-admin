@@ -9,8 +9,10 @@ from app.services.scraping.core.domain_utils import get_etld_plus_one
 from app.services.scraping.core.date_utils import parse_mention_date
 from app.services.scraping.core.metrics import observe_http_error, observe_http_request
 from app.services.scraping.core.rate_limit import get_domain_limiter
+from app.services.scraping.core.text_processing import compile_keyword_patterns, keyword_match_score
 
 logger = logging.getLogger("scraping")
+GOOGLE_NEWS_RSS_SEARCH_URL = "https://news.google.com/rss/search?q={}&hl=da&gl=DK&ceid=DK:da"
 
 
 def _log(scrape_run_id: Optional[str], message: str, level: int = logging.INFO) -> None:
@@ -29,19 +31,14 @@ def _normalize_utc(dt: Optional[datetime]) -> Optional[datetime]:
 async def scrape_rss(
     keywords: List[str],
     from_date: Optional[datetime] = None,
-    scrape_run_id: Optional[str] = None
+    scrape_run_id: Optional[str] = None,
 ) -> List[Dict]:
     """
-    Scraper RSS feeds via Google News RSS endpoint.
+    Scrape Google News RSS search feeds for a keyword set.
 
-    NOTE: Da vi søger på keywords, er RSS lidt tricky.
-    Normalt abonnerer man på et feed URL.
-    Her laver vi en Google News RSS søgning som fallback/gratis alternativ.
-    Dette giver os data uden API key limits (dog med rate limits).
-    
     Args:
-        keywords: List of keywords to search for
-        from_date: Optional datetime to filter articles from. Defaults to 24 hours ago.
+        keywords: Keywords to search for.
+        from_date: Optional UTC cutoff datetime; defaults to now minus 24 hours.
     """
     if not keywords:
         _log(scrape_run_id, "No keywords provided for RSS scraping", logging.WARNING)
@@ -54,10 +51,7 @@ async def scrape_rss(
     total_missing_date = 0
     total_unparseable_date = 0
     total_parse_errors = 0
-
-    # Vi bruger Google News RSS endpoint som en gratis "hack"
-    # Det giver os data uden API key limits (dog med rate limits)
-    base_url = "https://news.google.com/rss/search?q={}&hl=da&gl=DK&ceid=DK:da"
+    total_phrase_miss = 0
 
     # Use provided from_date or default to 24 hours ago
     explicit_cutoff = _normalize_utc(from_date)
@@ -71,13 +65,18 @@ async def scrape_rss(
 
     for keyword in keywords:
         try:
-            url = base_url.format(keyword.replace(" ", "+"))
+            url = GOOGLE_NEWS_RSS_SEARCH_URL.format(keyword.replace(" ", "+"))
+            keyword_patterns = compile_keyword_patterns([keyword])
+            if not keyword_patterns:
+                _log(scrape_run_id, f"Keyword '{keyword}': no valid phrase pattern after cleaning", logging.WARNING)
+                continue
             keyword_entries_seen = 0
             keyword_kept = 0
             keyword_before_cutoff = 0
             keyword_missing_date = 0
             keyword_unparseable_date = 0
             keyword_parse_errors = 0
+            keyword_phrase_miss = 0
 
             # Apply per-domain RSS rate control before outbound request.
             etld1 = get_etld_plus_one(url)
@@ -120,19 +119,23 @@ async def scrape_rss(
                     logging.WARNING,
                 )
 
-            if not hasattr(feed, 'entries'):
+            if not hasattr(feed, "entries"):
                 _log(scrape_run_id, f"Keyword '{keyword}': no entries attribute in feed", logging.WARNING)
                 continue
 
             keyword_entries_seen = len(feed.entries)
             for entry in feed.entries:
                 try:
-                    # Parse published date - skip articles without parsable date
-                    published_parsed = entry.get("published_parsed")
-                    if not published_parsed:
+                    # Parse published date - try structured fields first, then raw string.
+                    raw_date = (
+                        entry.get("published_parsed")
+                        or entry.get("updated_parsed")
+                        or entry.get("published")
+                    )
+                    if not raw_date:
                         keyword_missing_date += 1
                         continue
-                    published_dt = parse_mention_date(published_parsed)
+                    published_dt = parse_mention_date(raw_date)
                     if published_dt is None:
                         keyword_unparseable_date += 1
                         continue
@@ -142,15 +145,22 @@ async def scrape_rss(
                         keyword_before_cutoff += 1
                         continue
 
+                    title = entry.get("title", "Ingen titel")
+                    summary = entry.get("summary", "")
+                    text_to_match = f"{title}\n{summary}"
+                    if keyword_match_score(keyword_patterns, text_to_match) < 1:
+                        keyword_phrase_miss += 1
+                        continue
+
                     # Extract link (Google News RSS wraps the real link)
                     link = entry.get("link", "")
 
                     mentions.append({
-                        "title": entry.get("title", "Ingen titel"),
+                        "title": title,
                         "link": link,
-                        "content_teaser": entry.get("summary", "")[:200],
+                        "content_teaser": summary[:200],
                         "platform": "Google RSS",
-                        "published_parsed": published_parsed,
+                        "published_parsed": raw_date,
                     })
                     keyword_kept += 1
                     _log(scrape_run_id, f"Match: {entry.get('title', 'Ingen titel')[:60]}", logging.DEBUG)
@@ -166,13 +176,14 @@ async def scrape_rss(
             total_missing_date += keyword_missing_date
             total_unparseable_date += keyword_unparseable_date
             total_parse_errors += keyword_parse_errors
+            total_phrase_miss += keyword_phrase_miss
             _log(
                 scrape_run_id,
                 (
                     f"Keyword '{keyword}' summary: entries={keyword_entries_seen}, "
                     f"kept={keyword_kept}, before_cutoff={keyword_before_cutoff}, "
                     f"missing_date={keyword_missing_date}, unparseable_date={keyword_unparseable_date}, "
-                    f"parse_errors={keyword_parse_errors}"
+                    f"parse_errors={keyword_parse_errors}, phrase_miss={keyword_phrase_miss}"
                 ),
             )
 
@@ -191,7 +202,7 @@ async def scrape_rss(
             f"Found {len(mentions)} articles. Totals: entries={total_entries_seen}, "
             f"kept={total_kept}, before_cutoff={total_before_cutoff}, "
             f"missing_date={total_missing_date}, unparseable_date={total_unparseable_date}, "
-            f"parse_errors={total_parse_errors}"
+            f"parse_errors={total_parse_errors}, phrase_miss={total_phrase_miss}"
         ),
     )
     return mentions

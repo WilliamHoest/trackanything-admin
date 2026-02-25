@@ -7,6 +7,7 @@ import asyncio
 from bs4 import BeautifulSoup
 import httpx
 
+from app.core.config import settings
 from app.services.scraping.core.http_client import fetch_with_retry
 from app.services.scraping.core.metrics import observe_extraction, observe_playwright_fallback
 from app.services.scraping.core.text_processing import (
@@ -30,6 +31,11 @@ except Exception:
     async_playwright = None
     PlaywrightTimeoutError = Exception
 
+try:
+    from scrapling.fetchers import Fetcher as ScraplingFetcher
+except Exception:
+    ScraplingFetcher = None
+
 
 PLAYWRIGHT_NAVIGATION_TIMEOUT_MS = 15000
 PLAYWRIGHT_RENDER_WAIT_MS = 800
@@ -42,6 +48,88 @@ def _normalize_utc(dt: Optional[datetime]) -> Optional[datetime]:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def _extract_html_from_scrapling_page(page: object) -> str:
+    candidate_attrs = ("html_content", "html", "content", "body", "text", "raw_html", "source")
+    for attr in candidate_attrs:
+        value = getattr(page, attr, None)
+        if callable(value):
+            try:
+                value = value()
+            except Exception:
+                continue
+        if isinstance(value, (bytes, bytearray)):
+            try:
+                value = value.decode("utf-8", errors="ignore")
+            except Exception:
+                continue
+        if isinstance(value, str) and value.strip():
+            return value
+
+    try:
+        fallback = str(page)
+    except Exception:
+        return ""
+    return fallback if isinstance(fallback, str) and "<" in fallback else ""
+
+
+def _extract_final_url_from_scrapling_page(page: object, fallback_url: str) -> str:
+    candidate_attrs = ("url", "final_url", "response_url", "real_url")
+    for attr in candidate_attrs:
+        value = getattr(page, attr, None)
+        if callable(value):
+            try:
+                value = value()
+            except Exception:
+                continue
+        if isinstance(value, str) and value.strip():
+            return value
+    return fallback_url
+
+
+def _fetch_with_scrapling_sync(url: str) -> Optional[tuple[str, str]]:
+    if ScraplingFetcher is None:
+        return None
+
+    page = None
+    class_get = getattr(ScraplingFetcher, "get", None)
+    if callable(class_get):
+        page = class_get(url)
+    else:
+        fetcher = ScraplingFetcher()
+        instance_get = getattr(fetcher, "get", None)
+        if callable(instance_get):
+            page = instance_get(url)
+        else:
+            instance_fetch = getattr(fetcher, "fetch", None)
+            if callable(instance_fetch):
+                page = instance_fetch(url)
+
+    if page is None:
+        return None
+
+    html = _extract_html_from_scrapling_page(page)
+    if not html:
+        return None
+
+    final_url = _extract_final_url_from_scrapling_page(page, url)
+    return html, final_url
+
+
+async def _fetch_with_scrapling(
+    url: str,
+    scrape_run_id: Optional[str] = None,
+) -> Optional[tuple[str, str]]:
+    if ScraplingFetcher is None:
+        _log(scrape_run_id, f"Scrapling unavailable (not installed) for {url}", logging.DEBUG)
+        return None
+
+    try:
+        return await asyncio.to_thread(_fetch_with_scrapling_sync, url)
+    except Exception as e:
+        _log(scrape_run_id, f"Scrapling fetch failed for {url}: {type(e).__name__}: {e}", logging.DEBUG)
+        return None
 
 
 async def _fetch_with_playwright(
@@ -117,33 +205,82 @@ async def _scrape_article_content(
     from app.services.scraping.core.http_client import get_default_headers
 
     headers = get_default_headers()
-
-    try:
-        response = await fetch_with_retry(
-            client,
-            url,
-            rate_profile="html",
-            metrics_provider="configurable",
-            headers=headers,
-        )
-    except httpx.HTTPStatusError as e:
-        if e.response is not None and e.response.status_code == 402:
-            _log(scrape_run_id, f"Paywall blocked (402) for {url}")
-            return None
-        raise
-
-    final_url = normalize_url(str(response.url)) if response.url else normalize_url(url)
+    final_url = normalize_url(url)
     metrics_domain = _normalize_domain(urlparse(final_url).netloc) or domain or "unknown"
-    if final_url != normalize_url(url):
-        _log(scrape_run_id, f"Redirected article URL: {url} -> {final_url}", level=logging.DEBUG)
+    title = ""
+    content = ""
+    date_str = ""
+    date_confident = False
+    extracted_via = "none"
+    extraction_path = "legacy"
 
-    soup = BeautifulSoup(response.text, "lxml")
-    title, content, date_str, _date_confident, extracted_via = await _extract_content(
-        soup,
-        response.text,
-        config,
-        scrape_run_id=scrape_run_id,
-    )
+    use_scrapling = bool(settings.scraping_use_scrapling)
+    if use_scrapling:
+        scrapling_result = await _fetch_with_scrapling(url, scrape_run_id=scrape_run_id)
+        if scrapling_result:
+            scrapling_html, scrapling_final_url = scrapling_result
+            final_url = normalize_url(scrapling_final_url or url)
+            metrics_domain = _normalize_domain(urlparse(final_url).netloc) or domain or "unknown"
+            if final_url != normalize_url(url):
+                _log(
+                    scrape_run_id,
+                    f"Scrapling resolved redirected URL: {url} -> {final_url}",
+                    level=logging.DEBUG,
+                )
+            scrapling_soup = BeautifulSoup(scrapling_html, "lxml")
+            title, content, date_str, date_confident, extracted_via = await _extract_content(
+                scrapling_soup,
+                scrapling_html,
+                config,
+                scrape_run_id=scrape_run_id,
+            )
+            if _has_meaningful_content(content):
+                extraction_path = "scrapling"
+                extracted_via = f"{extracted_via}+scrapling"
+                observe_extraction("configurable", metrics_domain, "configurable_scrapling_success", len(content))
+            else:
+                observe_extraction("configurable", metrics_domain, "configurable_scrapling_failure", 0)
+                _log(
+                    scrape_run_id,
+                    f"Scrapling returned low/empty content for {final_url}; falling back to legacy fetch.",
+                    logging.DEBUG,
+                )
+                title = ""
+                content = ""
+                date_str = ""
+                date_confident = False
+                extracted_via = "none"
+        else:
+            observe_extraction("configurable", metrics_domain, "configurable_scrapling_failure", 0)
+
+    if extraction_path != "scrapling":
+        try:
+            response = await fetch_with_retry(
+                client,
+                url,
+                rate_profile="html",
+                metrics_provider="configurable",
+                headers=headers,
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response is not None and e.response.status_code == 402:
+                _log(scrape_run_id, f"Paywall blocked (402) for {url}")
+                return None
+            raise
+
+        final_url = normalize_url(str(response.url)) if response.url else normalize_url(url)
+        metrics_domain = _normalize_domain(urlparse(final_url).netloc) or domain or "unknown"
+        if final_url != normalize_url(url):
+            _log(scrape_run_id, f"Redirected article URL: {url} -> {final_url}", level=logging.DEBUG)
+
+        soup = BeautifulSoup(response.text, "lxml")
+        title, content, date_str, date_confident, extracted_via = await _extract_content(
+            soup,
+            response.text,
+            config,
+            scrape_run_id=scrape_run_id,
+        )
+        extraction_path = "legacy"
 
     if not _has_meaningful_content(content):
         observe_playwright_fallback(metrics_domain, "triggered")
@@ -156,7 +293,7 @@ async def _scrape_article_content(
         if playwright_result:
             pw_html, pw_final_url = playwright_result
             pw_soup = BeautifulSoup(pw_html, "lxml")
-            pw_title, pw_content, pw_date_str, _pw_date_confident, pw_extracted_via = await _extract_content(
+            pw_title, pw_content, pw_date_str, pw_date_confident, pw_extracted_via = await _extract_content(
                 pw_soup,
                 pw_html,
                 config,
@@ -168,6 +305,7 @@ async def _scrape_article_content(
                 content = pw_content
                 if pw_date_str:
                     date_str = pw_date_str
+                    date_confident = pw_date_confident
                 extracted_via = f"{pw_extracted_via}+playwright"
                 if pw_final_url and normalize_url(pw_final_url) != final_url:
                     _log(
@@ -195,8 +333,12 @@ async def _scrape_article_content(
 
     if _has_meaningful_content(content):
         observe_extraction("configurable", metrics_domain, "success", len(content))
+        if extraction_path == "legacy":
+            observe_extraction("configurable", metrics_domain, "configurable_legacy_success", len(content))
     else:
         observe_extraction("configurable", metrics_domain, "empty_content", 0)
+        if extraction_path == "legacy":
+            observe_extraction("configurable", metrics_domain, "configurable_legacy_failure", 0)
 
     text_to_search = f"{title} {content}"
     term_match_score = keyword_match_score(patterns, text_to_search)
@@ -215,11 +357,39 @@ async def _scrape_article_content(
         # Strict cutoff policy for configurable sources:
         # if from_date is active, article must have a parseable date and satisfy cutoff.
         if from_date_utc is not None:
+            raw_date_preview = date_str if len(date_str) <= 160 else f"{date_str[:157]}..."
+            parsed_date_iso = parsed_date.isoformat() if parsed_date else "None"
+            _log(
+                scrape_run_id,
+                (
+                    f"Date cutoff evaluation for {final_url}: "
+                    f"raw_date={raw_date_preview!r}, "
+                    f"date_confident={date_confident}, "
+                    f"parsed_date={parsed_date_iso}, "
+                    f"cutoff={from_date_utc.isoformat()}, "
+                    f"extraction_path={extraction_path}, "
+                    f"extracted_via={extracted_via}"
+                ),
+                level=logging.DEBUG,
+            )
+
             if not date_str:
                 observe_extraction("configurable", metrics_domain, "date_missing_cutoff_skip", 0)
                 _log(
                     scrape_run_id,
                     f"Date missing for {final_url} with active cutoff {from_date_utc.isoformat()}. Skipping.",
+                    level=logging.DEBUG,
+                )
+                return None
+
+            if not date_confident:
+                observe_extraction("configurable", metrics_domain, "date_low_confidence_cutoff_skip", 0)
+                _log(
+                    scrape_run_id,
+                    (
+                        f"Date low-confidence for {final_url} "
+                        f"(raw='{date_str}') with active cutoff {from_date_utc.isoformat()}. Skipping."
+                    ),
                     level=logging.DEBUG,
                 )
                 return None
@@ -244,6 +414,15 @@ async def _scrape_article_content(
                     level=logging.DEBUG,
                 )
                 return None
+
+            _log(
+                scrape_run_id,
+                (
+                    f"Date passed cutoff for {final_url}: "
+                    f"parsed_date={parsed_date.isoformat()} >= cutoff={from_date_utc.isoformat()}"
+                ),
+                level=logging.DEBUG,
+            )
 
         if parsed_date:
             published_parsed = parsed_date.timetuple()

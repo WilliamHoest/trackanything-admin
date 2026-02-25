@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     scraping_provider_serpapi_enabled: bool = True
     scraping_provider_configurable_enabled: bool = True
     scraping_provider_rss_enabled: bool = True
+    scraping_use_scrapling: bool = False
     scraping_max_keywords_per_run: int = 50
     scraping_max_total_urls_per_run: int = 200
     scraping_blind_domain_circuit_threshold: int = 8

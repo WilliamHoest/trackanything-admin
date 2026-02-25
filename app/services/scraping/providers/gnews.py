@@ -1,17 +1,16 @@
-from typing import List, Dict, Optional
-from datetime import datetime, timedelta, timezone
-import httpx
 import logging
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional
+
+import httpx
 
 from app.core.config import settings
 from app.services.scraping.core.date_utils import parse_mention_date
-from app.services.scraping.core.http_client import (
-    fetch_with_retry, 
-    TIMEOUT_SECONDS
-)
+from app.services.scraping.core.http_client import TIMEOUT_SECONDS, fetch_with_retry
 from app.services.scraping.core.text_processing import clean_keywords
 
 logger = logging.getLogger("scraping")
+GNEWS_SEARCH_URL = "https://gnews.io/api/v4/search"
 
 
 def _log(scrape_run_id: Optional[str], message: str, level: int = logging.INFO) -> None:
@@ -64,15 +63,14 @@ def _build_gnews_attempts(base_params: Dict[str, str]) -> List[Dict[str, str]]:
 async def scrape_gnews(
     keywords: List[str],
     from_date: Optional[datetime] = None,
-    scrape_run_id: Optional[str] = None
+    scrape_run_id: Optional[str] = None,
 ) -> List[Dict]:
     """
     Fetch articles from GNews API.
-    Uses async httpx with retry logic.
-    
+
     Args:
-        keywords: List of keywords to search for
-        from_date: Optional datetime to filter articles from. Defaults to 24 hours ago.
+        keywords: List of keywords to search for.
+        from_date: Optional datetime cutoff; defaults to 24 hours ago.
     """
     if not keywords or not settings.gnews_api_key:
         if not settings.gnews_api_key:
@@ -110,7 +108,7 @@ async def scrape_gnews(
                     )
                     response = await fetch_with_retry(
                         client,
-                        "https://gnews.io/api/v4/search",
+                        GNEWS_SEARCH_URL,
                         rate_profile="api",
                         metrics_provider="gnews",
                         headers=headers,
@@ -178,7 +176,7 @@ async def scrape_gnews(
                         "link": article["url"],
                         "published_parsed": parsed.timetuple(),
                         "platform": "GNews",
-                        "content_teaser": article.get("description", "")
+                        "content_teaser": article.get("description", ""),
                     })
                     _log(scrape_run_id, f"Match: {article.get('title', 'Uden titel')}", logging.DEBUG)
 

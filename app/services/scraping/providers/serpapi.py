@@ -1,18 +1,21 @@
-from typing import List, Dict, Optional
-from datetime import datetime, timezone
 import asyncio
 import logging
 from time import perf_counter
+from datetime import datetime, timezone
+from typing import Dict, List, Optional
+
 from app.services.scraping.core.date_utils import parse_mention_date
 from serpapi import GoogleSearch
 
 from app.core.config import settings
-from app.services.scraping.core.text_processing import clean_keywords
 from app.services.scraping.core.domain_utils import get_etld_plus_one
 from app.services.scraping.core.metrics import observe_http_error, observe_http_request
 from app.services.scraping.core.rate_limit import get_domain_limiter
+from app.services.scraping.core.text_processing import clean_keywords
 
 logger = logging.getLogger("scraping")
+SERPAPI_BASE_URL = "https://serpapi.com"
+SERPAPI_ENGINE = "google_news"
 
 
 def _log(scrape_run_id: Optional[str], message: str, level: int = logging.INFO) -> None:
@@ -73,15 +76,14 @@ def _detect_limit_signal(error_message: str) -> Optional[str]:
 async def scrape_serpapi(
     keywords: List[str],
     from_date: Optional[datetime] = None,
-    scrape_run_id: Optional[str] = None
+    scrape_run_id: Optional[str] = None,
 ) -> List[Dict]:
     """
     Fetch articles from SerpAPI (Google News).
-    Uses async httpx with retry logic.
 
     Args:
-        keywords: List of keywords to search for
-        from_date: Optional datetime to filter articles from. Defaults to 24 hours ago.
+        keywords: List of keywords to search for.
+        from_date: Optional datetime cutoff.
     """
     if not keywords:
         return []
@@ -99,11 +101,9 @@ async def scrape_serpapi(
 
         params = {
             "q": query,
-            "engine": "google_news",
-            # "hl": "da",  # Removed to allow broader language results
-            # "gl": "dk",  # Removed to allow broader geographic results
+            "engine": SERPAPI_ENGINE,
             "api_key": settings.serpapi_key,
-            "num": 20
+            "num": 20,
         }
 
         tbs = _build_tbs_from_date(from_date_utc)
@@ -111,14 +111,12 @@ async def scrape_serpapi(
             params["tbs"] = tbs
             _log(scrape_run_id, f"Applying Google News time filter tbs={tbs} for cutoff {from_date_utc.isoformat()}")
 
-        # Use asyncio.to_thread to run the blocking GoogleSearch call
-        # This prevents blocking the event loop while waiting for SerpAPI
         def run_search():
             search = GoogleSearch(params)
             return search.get_dict()
 
         # Apply per-domain API rate control before outbound SerpAPI request.
-        etld1 = get_etld_plus_one("https://serpapi.com")
+        etld1 = get_etld_plus_one(SERPAPI_BASE_URL)
         limiter = get_domain_limiter(etld1, profile="api")
         request_started_at = perf_counter()
         async with limiter:
@@ -174,7 +172,8 @@ async def scrape_serpapi(
         skipped_missing_date = 0
         skipped_unparseable_date = 0
         for item in news_results:
-            raw_date = item.get("date")
+            # Prefer absolute timestamps when available for strict interval accuracy.
+            raw_date = item.get("iso_date") or item.get("published_at") or item.get("date")
             parsed_dt: Optional[datetime] = parse_mention_date(raw_date)
 
             # Strict mode when cutoff is active:
@@ -216,7 +215,7 @@ async def scrape_serpapi(
     except Exception as e:
         observe_http_error(
             provider="serpapi",
-            domain=get_etld_plus_one("https://serpapi.com"),
+            domain=get_etld_plus_one(SERPAPI_BASE_URL),
             error_type=type(e).__name__,
         )
         _log(scrape_run_id, f"Scraping failed: {type(e).__name__}: {e}", logging.ERROR)
