@@ -2,10 +2,12 @@ from typing import Dict, List, Optional
 from datetime import datetime
 from urllib.parse import urlparse
 import asyncio
+import contextlib
 import logging
 
 import httpx
 
+from app.core.config import settings
 from app.crud.supabase_crud import SupabaseCRUD
 from app.services.scraping.core.http_client import TIMEOUT_SECONDS
 from app.services.scraping.core.metrics import observe_extraction, observe_guardrail_event
@@ -22,6 +24,7 @@ from .config import (
 )
 from .discovery import _is_candidate_article_url, search_single_keyword
 from .fetcher import _scrape_article_content
+from .stealth_session import AsyncStealthSessionManager
 
 PRIMARY_MIN_KEYWORD_MATCHES = 2
 FALLBACK_MIN_KEYWORD_MATCHES = 1
@@ -92,7 +95,31 @@ async def scrape_configurable_sources(
     blind_domain_lock = asyncio.Lock()
 
     limits = httpx.Limits(max_keepalive_connections=50, max_connections=100)
-    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS, limits=limits) as client:
+    async with contextlib.AsyncExitStack() as stack:
+        client = await stack.enter_async_context(
+            httpx.AsyncClient(timeout=TIMEOUT_SECONDS, limits=limits)
+        )
+        stealth_session = None
+        if settings.scraping_stealthy_session_enabled:
+            try:
+                mgr = AsyncStealthSessionManager(
+                    max_pages=settings.scraping_stealthy_session_max_pages,
+                    timeout_ms=settings.scraping_stealthy_session_timeout_ms,
+                    solve_cloudflare=settings.scraping_stealthy_session_solve_cloudflare,
+                    disable_resources=settings.scraping_stealthy_session_disable_resources,
+                    block_webrtc=settings.scraping_stealthy_session_block_webrtc,
+                    scrape_run_id=scrape_run_id,
+                )
+                await stack.enter_async_context(mgr)
+                stealth_session = mgr
+                _log(scrape_run_id, "StealthySession started", logging.INFO)
+            except Exception as e:
+                _log(
+                    scrape_run_id,
+                    f"StealthySession init failed, continuing without: {e}",
+                    logging.WARNING,
+                )
+
         discovery_tasks = []
         for config in searchable_configs:
             for keyword in keywords:
@@ -165,6 +192,7 @@ async def scrape_configurable_sources(
                             min_keyword_matches=PRIMARY_MIN_KEYWORD_MATCHES,
                             allow_partial_matches=True,
                             scrape_run_id=scrape_run_id,
+                            stealth_session=stealth_session,
                         )
                         if article is None:
                             async with blind_domain_lock:

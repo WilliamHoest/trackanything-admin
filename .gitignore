@@ -160,6 +160,8 @@ yarn-debug.log*
 yarn-error.log*
 package-lock.json
 
+adaptive_storage/
+
 # Supabase
 supabase/.branches
 supabase/.temp

@@ -27,6 +27,15 @@ class Settings(BaseSettings):
     scraping_provider_configurable_enabled: bool = True
     scraping_provider_rss_enabled: bool = True
     scraping_use_scrapling: bool = False
+    scraping_stealthy_fetcher_enabled: bool = False
+    scraping_adaptive_selector_enabled: bool = False
+    scraping_stealthy_session_enabled: bool = False
+    scraping_stealthy_session_max_pages: int = 3
+    scraping_stealthy_session_timeout_ms: int = 30000
+    scraping_stealthy_session_solve_cloudflare: bool = True
+    scraping_stealthy_session_disable_resources: bool = False
+    scraping_stealthy_session_block_webrtc: bool = True
+    scraping_stealthy_session_retries: int = 1
     scraping_max_keywords_per_run: int = 50
     scraping_max_total_urls_per_run: int = 200
     scraping_blind_domain_circuit_threshold: int = 8

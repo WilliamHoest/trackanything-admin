@@ -1,8 +1,10 @@
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import urlparse
 import logging
 import asyncio
+import os
 
 from bs4 import BeautifulSoup
 import httpx
@@ -20,6 +22,7 @@ from .config import _get_config_for_domain, _log, _normalize_domain
 from .extractor import (
     _has_meaningful_content,
     _extract_content,
+    _extract_content_adaptive,
     _parse_date_value,
 )
 from .config import PLAYWRIGHT_CONCURRENCY_LIMIT
@@ -33,13 +36,43 @@ except Exception:
 
 try:
     from scrapling.fetchers import Fetcher as ScraplingFetcher
+    from scrapling.fetchers import StealthyFetcher as ScraplingStealthyFetcher
 except Exception:
     ScraplingFetcher = None
+    ScraplingStealthyFetcher = None
 
 
 PLAYWRIGHT_NAVIGATION_TIMEOUT_MS = 15000
 PLAYWRIGHT_RENDER_WAIT_MS = 800
 _playwright_semaphore = asyncio.Semaphore(PLAYWRIGHT_CONCURRENCY_LIMIT)
+
+_adaptive_storages: dict = {}
+
+
+def _get_adaptive_storage_file() -> str:
+    base_dir = Path(__file__).parents[5]  # trackanything-admin root
+    storage_dir = base_dir / "adaptive_storage"
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    return str(storage_dir / "adaptive_selectors.db")
+
+
+def _get_adaptive_storage(storage_file: str, domain: str) -> Any:
+    """Returnerer en SQLiteStorageSystem-instans per domæne; bypasser lru_cache(1)."""
+    from scrapling.core.storage import SQLiteStorageSystem
+    key = f"{storage_file}::{domain}"
+    if key not in _adaptive_storages:
+        _adaptive_storages[key] = SQLiteStorageSystem.__wrapped__(storage_file, domain)
+    return _adaptive_storages[key]
+
+
+def _make_adaptive_selector(html: str, domain: str, storage_file: str):
+    """Opretter et Scrapling Selector-objekt med adaptive=True fra rå HTML."""
+    try:
+        from scrapling.parser import Selector
+        storage = _get_adaptive_storage(storage_file, domain)
+        return Selector(html, url=domain, adaptive=True, _storage=storage)
+    except Exception as e:
+        return None
 
 
 def _normalize_utc(dt: Optional[datetime]) -> Optional[datetime]:
@@ -88,16 +121,21 @@ def _extract_final_url_from_scrapling_page(page: object, fallback_url: str) -> s
     return fallback_url
 
 
-def _fetch_with_scrapling_sync(url: str) -> Optional[tuple[str, str]]:
-    if ScraplingFetcher is None:
+def _fetch_with_scrapling_sync(url: str, use_stealthy: bool = False) -> Optional[tuple[str, str]]:
+    fetcher_cls = (
+        ScraplingStealthyFetcher
+        if (use_stealthy and ScraplingStealthyFetcher is not None)
+        else ScraplingFetcher
+    )
+    if fetcher_cls is None:
         return None
 
     page = None
-    class_get = getattr(ScraplingFetcher, "get", None)
+    class_get = getattr(fetcher_cls, "get", None)
     if callable(class_get):
         page = class_get(url)
     else:
-        fetcher = ScraplingFetcher()
+        fetcher = fetcher_cls()
         instance_get = getattr(fetcher, "get", None)
         if callable(instance_get):
             page = instance_get(url)
@@ -120,13 +158,15 @@ def _fetch_with_scrapling_sync(url: str) -> Optional[tuple[str, str]]:
 async def _fetch_with_scrapling(
     url: str,
     scrape_run_id: Optional[str] = None,
+    use_stealthy: bool = False,
 ) -> Optional[tuple[str, str]]:
-    if ScraplingFetcher is None:
+    fetcher_cls = ScraplingStealthyFetcher if use_stealthy else ScraplingFetcher
+    if fetcher_cls is None:
         _log(scrape_run_id, f"Scrapling unavailable (not installed) for {url}", logging.DEBUG)
         return None
 
     try:
-        return await asyncio.to_thread(_fetch_with_scrapling_sync, url)
+        return await asyncio.to_thread(_fetch_with_scrapling_sync, url, use_stealthy)
     except Exception as e:
         _log(scrape_run_id, f"Scrapling fetch failed for {url}: {type(e).__name__}: {e}", logging.DEBUG)
         return None
@@ -175,6 +215,18 @@ async def _fetch_with_playwright(
             return None
 
 
+async def _fetch_with_stealthy_session(
+    session: Any,
+    url: str,
+    scrape_run_id: Optional[str] = None,
+) -> Optional[tuple[str, str]]:
+    try:
+        return await session.fetch(url)
+    except Exception as e:
+        _log(scrape_run_id, f"StealthySession fetch failed for {url}: {type(e).__name__}: {e}", logging.DEBUG)
+        return None
+
+
 async def _scrape_article_content(
     client: httpx.AsyncClient,
     url: str,
@@ -185,6 +237,7 @@ async def _scrape_article_content(
     min_keyword_matches: int = 2,
     allow_partial_matches: bool = False,
     scrape_run_id: Optional[str] = None,
+    stealth_session: Optional[Any] = None,
 ) -> Optional[Dict]:
     """Scrape a single article URL and return a mention payload if keyword-matched."""
     if not keywords:
@@ -214,9 +267,47 @@ async def _scrape_article_content(
     extracted_via = "none"
     extraction_path = "legacy"
 
-    use_scrapling = bool(settings.scraping_use_scrapling)
+    use_stealthy = bool(settings.scraping_stealthy_fetcher_enabled)
+    use_scrapling = bool(settings.scraping_use_scrapling) or use_stealthy
+    use_adaptive = bool(settings.scraping_adaptive_selector_enabled) and (use_scrapling or stealth_session is not None)
+    adaptive_storage_file = _get_adaptive_storage_file() if use_adaptive else ""
+
+    if stealth_session is not None:
+        session_result = await _fetch_with_stealthy_session(stealth_session, url, scrape_run_id)
+        if session_result:
+            session_html, session_final_url = session_result
+            final_url = normalize_url(session_final_url or url)
+            metrics_domain = _normalize_domain(urlparse(final_url).netloc) or domain or "unknown"
+            if final_url != normalize_url(url):
+                _log(scrape_run_id, f"StealthySession resolved redirect: {url} -> {final_url}", logging.DEBUG)
+            if use_adaptive:
+                adaptive_sel = _make_adaptive_selector(session_html, metrics_domain, adaptive_storage_file)
+                if adaptive_sel is not None:
+                    adaptive_result = await _extract_content_adaptive(adaptive_sel, config, scrape_run_id=scrape_run_id)
+                    if adaptive_result and _has_meaningful_content(adaptive_result[1]):
+                        title, content, date_str, date_confident, extracted_via = adaptive_result
+                        extraction_path = "stealthy_session_adaptive"
+                        extracted_via = f"{extracted_via}+stealthy_session_adaptive"
+                        observe_extraction("configurable", metrics_domain, "configurable_stealthy_session_success", len(content))
+            if extraction_path != "stealthy_session_adaptive":
+                session_soup = BeautifulSoup(session_html, "lxml")
+                title, content, date_str, date_confident, extracted_via = await _extract_content(
+                    session_soup, session_html, config, scrape_run_id=scrape_run_id,
+                )
+                if _has_meaningful_content(content):
+                    extraction_path = "stealthy_session"
+                    extracted_via = f"{extracted_via}+stealthy_session"
+                    observe_extraction("configurable", metrics_domain, "configurable_stealthy_session_success", len(content))
+                else:
+                    observe_extraction("configurable", metrics_domain, "configurable_stealthy_session_failure", 0)
+                    _log(scrape_run_id, f"StealthySession low/empty content for {final_url}; falling through.", logging.DEBUG)
+                    title = content = date_str = extracted_via = ""
+                    date_confident = False
+        else:
+            observe_extraction("configurable", metrics_domain, "configurable_stealthy_session_failure", 0)
+
     if use_scrapling:
-        scrapling_result = await _fetch_with_scrapling(url, scrape_run_id=scrape_run_id)
+        scrapling_result = await _fetch_with_scrapling(url, scrape_run_id=scrape_run_id, use_stealthy=use_stealthy)
         if scrapling_result:
             scrapling_html, scrapling_final_url = scrapling_result
             final_url = normalize_url(scrapling_final_url or url)
@@ -227,33 +318,51 @@ async def _scrape_article_content(
                     f"Scrapling resolved redirected URL: {url} -> {final_url}",
                     level=logging.DEBUG,
                 )
-            scrapling_soup = BeautifulSoup(scrapling_html, "lxml")
-            title, content, date_str, date_confident, extracted_via = await _extract_content(
-                scrapling_soup,
-                scrapling_html,
-                config,
-                scrape_run_id=scrape_run_id,
-            )
-            if _has_meaningful_content(content):
-                extraction_path = "scrapling"
-                extracted_via = f"{extracted_via}+scrapling"
-                observe_extraction("configurable", metrics_domain, "configurable_scrapling_success", len(content))
-            else:
-                observe_extraction("configurable", metrics_domain, "configurable_scrapling_failure", 0)
-                _log(
-                    scrape_run_id,
-                    f"Scrapling returned low/empty content for {final_url}; falling back to legacy fetch.",
-                    logging.DEBUG,
+            if use_adaptive:
+                adaptive_sel = _make_adaptive_selector(scrapling_html, metrics_domain, adaptive_storage_file)
+                if adaptive_sel is not None:
+                    adaptive_result = await _extract_content_adaptive(
+                        adaptive_sel, config, scrape_run_id=scrape_run_id
+                    )
+                    if adaptive_result and _has_meaningful_content(adaptive_result[1]):
+                        title, content, date_str, date_confident, extracted_via = adaptive_result
+                        extraction_path = "scrapling_adaptive"
+                        extracted_via = f"{extracted_via}+scrapling_adaptive"
+                        observe_extraction("configurable", metrics_domain, "configurable_adaptive_success", len(content))
+                    else:
+                        observe_extraction("configurable", metrics_domain, "configurable_adaptive_failure", 0)
+                        _log(scrape_run_id, f"Adaptive extraction empty for {final_url}; falling through to BS4.", logging.DEBUG)
+            if extraction_path != "scrapling_adaptive":
+                scrapling_soup = BeautifulSoup(scrapling_html, "lxml")
+                title, content, date_str, date_confident, extracted_via = await _extract_content(
+                    scrapling_soup,
+                    scrapling_html,
+                    config,
+                    scrape_run_id=scrape_run_id,
                 )
-                title = ""
-                content = ""
-                date_str = ""
-                date_confident = False
-                extracted_via = "none"
+                success_label = "configurable_stealthy_success" if use_stealthy else "configurable_scrapling_success"
+                failure_label = "configurable_stealthy_failure" if use_stealthy else "configurable_scrapling_failure"
+                if _has_meaningful_content(content):
+                    extraction_path = "scrapling"
+                    extracted_via = f"{extracted_via}+scrapling"
+                    observe_extraction("configurable", metrics_domain, success_label, len(content))
+                else:
+                    observe_extraction("configurable", metrics_domain, failure_label, 0)
+                    _log(
+                        scrape_run_id,
+                        f"Scrapling returned low/empty content for {final_url}; falling back to legacy fetch.",
+                        logging.DEBUG,
+                    )
+                    title = ""
+                    content = ""
+                    date_str = ""
+                    date_confident = False
+                    extracted_via = "none"
         else:
-            observe_extraction("configurable", metrics_domain, "configurable_scrapling_failure", 0)
+            failure_label = "configurable_stealthy_failure" if use_stealthy else "configurable_scrapling_failure"
+            observe_extraction("configurable", metrics_domain, failure_label, 0)
 
-    if extraction_path != "scrapling":
+    if extraction_path not in ("scrapling", "scrapling_adaptive", "stealthy_session", "stealthy_session_adaptive"):
         try:
             response = await fetch_with_retry(
                 client,

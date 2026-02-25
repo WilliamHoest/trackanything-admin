@@ -213,3 +213,83 @@ def _is_confident_date_for_filtering(date_str: str, from_attribute: bool) -> boo
     if from_attribute:
         return True
     return bool(DATE_CERTAINTY_PATTERN.search(date_str))
+
+
+def _extract_content_adaptive_sync(
+    page: object,
+    config,
+    scrape_run_id=None,
+):
+    """Sync-worker: kører CSS-selectors med adaptive=True, auto_save=True på Scrapling Selector."""
+
+    def _get_text(selector: str) -> str:
+        try:
+            results = page.css(selector, adaptive=True, auto_save=True)
+            if results:
+                return _clean_text(results[0].get_all_text(separator=" ", strip=True))
+        except Exception as e:
+            _log(scrape_run_id, f"  adaptive css({selector!r}) fejl: {e}", logging.DEBUG)
+        return ""
+
+    def _get_date(selector: str) -> tuple:
+        try:
+            results = page.css(selector, adaptive=True, auto_save=True)
+            if results:
+                elem = results[0]
+                dt = elem.attrib.get("datetime") or elem.attrib.get("content")
+                if dt:
+                    return _clean_text(str(dt)), True
+                return _clean_text(elem.get_all_text(separator=" ", strip=True)), False
+        except Exception as e:
+            _log(scrape_run_id, f"  adaptive css_date({selector!r}) fejl: {e}", logging.DEBUG)
+        return "", False
+
+    title = content = date_str = ""
+    date_confident = False
+
+    # Niveau 1: domæne-specifikke config-selectors
+    if config:
+        if config.get("title_selector"):
+            title = _get_text(config["title_selector"])
+        if config.get("content_selector"):
+            content = _get_text(config["content_selector"])
+        if config.get("date_selector"):
+            date_str, date_confident = _get_date(config["date_selector"])
+        if _has_meaningful_content(content):
+            return title, content, date_str, date_confident, "adaptive_config"
+
+    # Niveau 2: generiske selectors (bygger også SQLite-træning selv ved fiasko)
+    if not title:
+        for sel in GENERIC_TITLE_SELECTORS:
+            t = _get_text(sel)
+            if t:
+                title = t
+                break
+
+    for sel in GENERIC_CONTENT_SELECTORS:
+        c = _get_text(sel)
+        if len(c) > len(content):
+            content = c
+        if _has_meaningful_content(content):
+            break
+
+    if not date_str:
+        for sel in GENERIC_DATE_SELECTORS:
+            d, conf = _get_date(sel)
+            if d:
+                date_str, date_confident = d, conf
+                break
+
+    if _has_meaningful_content(content):
+        return title, content, date_str, date_confident, "adaptive_generic"
+
+    return None  # caller falder igennem til BeautifulSoup
+
+
+async def _extract_content_adaptive(page: object, config, scrape_run_id=None):
+    """Async wrapper til _extract_content_adaptive_sync."""
+    try:
+        return await asyncio.to_thread(_extract_content_adaptive_sync, page, config, scrape_run_id)
+    except Exception as e:
+        _log(scrape_run_id, f"Adaptive extraction threw: {type(e).__name__}: {e}", logging.DEBUG)
+        return None
