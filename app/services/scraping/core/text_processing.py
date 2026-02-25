@@ -3,6 +3,22 @@ from urllib.parse import urlparse, urlunparse
 from typing import List
 
 _QUOTE_CHARS = "\"'“”„‟«»`´"
+_QUERY_PUNCT_TRANSLATION = str.maketrans(
+    {
+        "&": " ",
+        "|": " ",
+        "/": " ",
+        "\\": " ",
+        ":": " ",
+        ";": " ",
+        "(": " ",
+        ")": " ",
+        "[": " ",
+        "]": " ",
+        "{": " ",
+        "}": " ",
+    }
+)
 
 
 def _normalize_quotes(text: str) -> str:
@@ -30,6 +46,8 @@ def sanitize_search_input(text: str) -> str:
 
     candidate = _normalize_quotes(text)
     candidate = re.sub(r'["\']', " ", candidate)
+    # Remove characters that commonly break provider query parsing.
+    candidate = candidate.translate(_QUERY_PUNCT_TRANSLATION)
     candidate = candidate.replace(".", " ").replace(",", " ")
     candidate = re.sub(r"\s+", " ", candidate).strip()
     return candidate
@@ -43,6 +61,51 @@ def clean_keywords(keywords: List[str]) -> List[str]:
         if candidate:
             cleaned.append(candidate)
     return cleaned
+
+
+def chunk_or_queries(
+    keywords: List[str],
+    max_query_chars: int,
+    separator: str = " OR ",
+) -> List[str]:
+    """
+    Build bounded OR-queries from keyword phrases.
+
+    Keeps each keyword phrase intact and only splits between phrases.
+    """
+    if max_query_chars <= 0:
+        return []
+
+    chunks: List[str] = []
+    current_terms: List[str] = []
+    current_len = 0
+    sep_len = len(separator)
+
+    for keyword in keywords:
+        term = keyword.strip()
+        if not term:
+            continue
+
+        term_len = len(term)
+        if not current_terms:
+            current_terms.append(term)
+            current_len = term_len
+            continue
+
+        projected_len = current_len + sep_len + term_len
+        if projected_len <= max_query_chars:
+            current_terms.append(term)
+            current_len = projected_len
+            continue
+
+        chunks.append(separator.join(current_terms))
+        current_terms = [term]
+        current_len = term_len
+
+    if current_terms:
+        chunks.append(separator.join(current_terms))
+
+    return chunks
 
 
 def _keyword_to_regex(keyword: str) -> re.Pattern | None:

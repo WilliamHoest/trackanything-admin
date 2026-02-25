@@ -38,20 +38,11 @@ def _log(scrape_run_id: Optional[str], message: str, level: int = logging.INFO) 
 
 
 def build_search_query(topic: Dict, keyword_text: str, brand_name: str) -> str:
-    topic_value = sanitize_search_input(topic.get("name", ""))
     keyword_value = sanitize_search_input(keyword_text)
-    brand_value = sanitize_search_input(brand_name)
-
-    template = topic.get("query_template")
-    if template:
-        return (
-            template
-            .replace("{{topic}}", topic_value)
-            .replace("{{keyword}}", keyword_value)
-            .replace("{{brand}}", brand_value)
-            .strip()
-        )
-    return f"{topic_value} {keyword_value}".strip()
+    _ = brand_name  # Query templates are intentionally ignored for scraping.
+    if keyword_value:
+        return keyword_value
+    return sanitize_search_input(topic.get("name", ""))
 
 
 def score_topic_match(topic_keywords: List[Dict], title: str, teaser: str) -> Tuple[int, List[Dict]]:
