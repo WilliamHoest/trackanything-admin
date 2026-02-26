@@ -15,6 +15,8 @@ DOMAIN_CIRCUIT_BREAKER_THRESHOLD = 5
 PLAYWRIGHT_CONCURRENCY_LIMIT = 3
 MAX_TOTAL_URLS_PER_RUN = max(1, settings.scraping_max_total_urls_per_run)
 BLIND_DOMAIN_CIRCUIT_BREAKER_THRESHOLD = max(1, settings.scraping_blind_domain_circuit_threshold)
+# Max keywords searched per site_search domain per run — prevents rate limiting on slow/throttled sites
+SITE_SEARCH_MAX_KEYWORDS_PER_DOMAIN = 12
 
 
 def _log(scrape_run_id: Optional[str], message: str, level: int = logging.INFO) -> None:

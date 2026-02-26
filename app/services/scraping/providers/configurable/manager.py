@@ -19,6 +19,7 @@ from .config import (
     EXTRACTION_CONCURRENCY,
     MAX_TOTAL_URLS_PER_RUN,
     PER_DOMAIN_EXTRACTION_CONCURRENCY,
+    SITE_SEARCH_MAX_KEYWORDS_PER_DOMAIN,
     _log,
     _normalize_domain,
 )
@@ -135,7 +136,17 @@ async def scrape_configurable_sources(
 
         discovery_tasks = []
         for config in site_search_configs:
-            for keyword in keywords:
+            site_keywords = keywords[:SITE_SEARCH_MAX_KEYWORDS_PER_DOMAIN]
+            if len(keywords) > SITE_SEARCH_MAX_KEYWORDS_PER_DOMAIN:
+                _log(
+                    scrape_run_id,
+                    (
+                        f"site_search keyword cap: {_normalize_domain(config.get('domain', ''))} "
+                        f"{len(keywords)} -> {len(site_keywords)} keywords"
+                    ),
+                    logging.DEBUG,
+                )
+            for keyword in site_keywords:
                 discovery_tasks.append(
                     search_single_keyword(
                         client,
@@ -151,6 +162,7 @@ async def scrape_configurable_sources(
                     client,
                     config,
                     from_date=from_date,
+                    keywords=keywords,
                     discovery_sem=discovery_sem,
                     scrape_run_id=scrape_run_id,
                 )
@@ -161,6 +173,7 @@ async def scrape_configurable_sources(
                     client,
                     config,
                     from_date=from_date,
+                    keywords=keywords,
                     discovery_sem=discovery_sem,
                     scrape_run_id=scrape_run_id,
                 )

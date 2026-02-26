@@ -98,6 +98,22 @@ def _is_candidate_article_url(url: str, source_domain: str) -> bool:
     return True
 
 
+def _url_slug_has_keyword_token(url: str, keywords: list[str], min_token_len: int = 4) -> bool:
+    """Return True if any keyword token (word) appears in the URL path slug.
+
+    Used as a fallback pre-filter for sitemaps that lack <news:title> elements.
+    Tokenises the URL path by splitting on common separators, then checks if any
+    keyword word of at least min_token_len chars is present as a substring.
+    """
+    path = urlparse(url).path.lower()
+    path_normalised = re.sub(r"[/_.\-]", " ", path)
+    for kw in keywords:
+        for token in kw.lower().split():
+            if len(token) >= min_token_len and token in path_normalised:
+                return True
+    return False
+
+
 async def search_single_keyword(
     client: httpx.AsyncClient,
     config: Dict,
@@ -136,15 +152,29 @@ async def search_single_keyword(
                     found_urls.add(normalize_url(full_url))
 
         except Exception as e:
-            _log(scrape_run_id, f"Search failed for '{keyword}' on {domain}: {e}", logging.WARNING)
+            _log(scrape_run_id, f"Search failed for '{keyword}' on {domain}: {type(e).__name__}: {e}", logging.WARNING)
 
     return domain, found_urls
+
+
+def _rss_title_matches(entry_or_item, keywords: list[str]) -> bool:
+    """Return True if any keyword appears in the item's title or description text."""
+    parts = []
+    for tag in ("title", "summary", "description", "content"):
+        el = entry_or_item.find(tag)
+        if el:
+            parts.append(el.get_text(" ", strip=True)[:400])
+    text = " ".join(parts).lower()
+    if not text:
+        return True  # No title/desc available — include by default
+    return any(kw.lower() in text for kw in keywords)
 
 
 async def discover_via_rss(
     client: httpx.AsyncClient,
     config: Dict,
     from_date: Optional[datetime] = None,
+    keywords: Optional[list[str]] = None,
     discovery_sem: asyncio.Semaphore = None,
     scrape_run_id: Optional[str] = None,
 ) -> tuple[str, set[str]]:
@@ -152,6 +182,8 @@ async def discover_via_rss(
 
     Fetches each URL in config['rss_urls'], detects RSS 2.0 vs Atom, and filters
     by from_date at discovery time to avoid fetching stale articles.
+    If keywords are provided, pre-filters on item title/description before adding
+    to the candidate pool (avoids scraping unrelated articles).
     Returns (domain, set[normalized_article_urls]).
     """
     domain = _normalize_domain(config.get("domain", ""))
@@ -191,6 +223,8 @@ async def discover_via_rss(
                                 pub_dt = parse_mention_date(raw_date)
                                 if pub_dt and not is_within_interval(pub_dt, from_date):
                                     continue
+                        if keywords and not _rss_title_matches(entry, keywords):
+                            continue
                         full_url = normalize_url(url)
                         if _is_candidate_article_url(full_url, domain):
                             found_urls.add(full_url)
@@ -208,6 +242,8 @@ async def discover_via_rss(
                                 pub_dt = parse_mention_date(raw_date)
                                 if pub_dt and not is_within_interval(pub_dt, from_date):
                                     continue
+                        if keywords and not _rss_title_matches(item, keywords):
+                            continue
                         full_url = normalize_url(url)
                         if _is_candidate_article_url(full_url, domain):
                             found_urls.add(full_url)
@@ -230,8 +266,13 @@ def _parse_urlset(
     domain: str,
     from_date: Optional[datetime],
     scrape_run_id: Optional[str],
+    keywords: Optional[list[str]] = None,
 ) -> set[str]:
-    """Parse a sitemap <urlset> and return filtered article URLs."""
+    """Parse a sitemap <urlset> and return filtered article URLs.
+
+    If keywords are provided, pre-filters on <news:title> when available so
+    only topically relevant URLs enter the extraction pool.
+    """
     urls: set[str] = set()
     try:
         root = ET.fromstring(xml_text)
@@ -241,10 +282,12 @@ def _parse_urlset(
                 continue
             article_url = loc_el.text.strip()
 
+            # Extract <news:news> block once — used for date AND title pre-filter
+            news_el = url_el.find(f"{{{_NEWS_NS}}}news")
+
             if from_date is not None:
                 # Prefer news:publication_date, fall back to lastmod
                 raw_date = None
-                news_el = url_el.find(f"{{{_NEWS_NS}}}news")
                 if news_el is not None:
                     pub_el = news_el.find(f"{{{_NEWS_NS}}}publication_date")
                     if pub_el is not None:
@@ -258,6 +301,19 @@ def _parse_urlset(
                     if pub_dt and not is_within_interval(pub_dt, from_date):
                         continue
 
+            # Keyword pre-filter: prefer <news:title> when available, fall back to URL slug
+            if keywords:
+                title_text = ""
+                if news_el is not None:
+                    title_el = news_el.find(f"{{{_NEWS_NS}}}title")
+                    if title_el is not None:
+                        title_text = (title_el.text or "").strip()
+                if title_text:
+                    if not any(kw.lower() in title_text.lower() for kw in keywords):
+                        continue
+                elif not _url_slug_has_keyword_token(article_url, keywords):
+                    continue
+
             full_url = normalize_url(article_url)
             if _is_candidate_article_url(full_url, domain):
                 urls.add(full_url)
@@ -270,6 +326,7 @@ async def discover_via_sitemap(
     client: httpx.AsyncClient,
     config: Dict,
     from_date: Optional[datetime] = None,
+    keywords: Optional[list[str]] = None,
     discovery_sem: asyncio.Semaphore = None,
     scrape_run_id: Optional[str] = None,
 ) -> tuple[str, set[str]]:
@@ -311,7 +368,7 @@ async def discover_via_sitemap(
                     (news_urls if "news" in child_url.lower() else other_urls).append(child_url)
                 child_sitemap_urls = (news_urls + other_urls)[:3]
             else:
-                found_urls.update(_parse_urlset(response.text, domain, from_date, scrape_run_id))
+                found_urls.update(_parse_urlset(response.text, domain, from_date, scrape_run_id, keywords))
 
         except Exception as e:
             _log(scrape_run_id, f"Sitemap fetch failed for {sitemap_url} ({domain}): {e}", logging.WARNING)
@@ -326,7 +383,7 @@ async def discover_via_sitemap(
                     metrics_provider="configurable",
                     headers=headers,
                 )
-                found_urls.update(_parse_urlset(response.text, domain, from_date, scrape_run_id))
+                found_urls.update(_parse_urlset(response.text, domain, from_date, scrape_run_id, keywords))
             except Exception as e:
                 _log(scrape_run_id, f"Child sitemap fetch failed for {child_url}: {e}", logging.WARNING)
 

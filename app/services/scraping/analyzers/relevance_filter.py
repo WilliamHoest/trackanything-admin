@@ -42,14 +42,15 @@ class RelevanceFilter:
         # Truncate text to avoid token limits and reduce cost (keep first 600 chars - title + start of lead)
         truncated_text = text[:600] if len(text) > 600 else text
 
-        # Improved Prompt Engineering:
-        # 1. Assign Role: "Media Analyst"
-        # 2. Strict instruction: "Discard irrelevant articles"
-        # 3. Context awareness: Match against the brand/keywords
         prompt = (
-            f"You are a strict media analyst. Determine if the following news text is relevant to these keywords/brands: '{context}'.\n\n"
-            f"Text: '{truncated_text}'\n\n"
-            f"Reply ONLY with 'YES' if it is relevant, or 'NO' if it is spam, unrelated, or a false positive."
+            f"You are a strict media analyst. Is the following article PRIMARILY about these topics: '{context}'?\n\n"
+            f"Article: '{truncated_text}'\n\n"
+            f"Rules:\n"
+            f"- YES only if the article's main subject directly concerns the topics above\n"
+            f"- NO if the topics appear only in sidebars, related links, ads, or as brief passing references\n"
+            f"- NO if the article is primarily about something unrelated (sports, accidents, weather, politics, etc.)\n"
+            f"- When in doubt, reply NO\n\n"
+            f"Reply ONLY with YES or NO."
         )
 
         headers = {
@@ -60,7 +61,7 @@ class RelevanceFilter:
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": "You are a helpful assistant that classifies news relevance. Output only YES or NO."},
+                {"role": "system", "content": "You are a strict relevance classifier. Reply ONLY with YES or NO. Only YES if the article's primary subject matches. Default to NO when uncertain."},
                 {"role": "user", "content": prompt}
             ],
             "max_tokens": 5,  # Only need YES or NO
