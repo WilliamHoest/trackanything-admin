@@ -22,7 +22,7 @@ from .config import (
     _log,
     _normalize_domain,
 )
-from .discovery import _is_candidate_article_url, search_single_keyword
+from .discovery import _is_candidate_article_url, discover_via_rss, discover_via_sitemap, search_single_keyword
 from .fetcher import _scrape_article_content
 from .stealth_session import AsyncStealthSessionManager
 
@@ -63,10 +63,20 @@ async def scrape_configurable_sources(
 
     crud = SupabaseCRUD()
     all_configs = await crud.get_all_source_configs()
-    searchable_configs = [
+    site_search_configs = [
         c
         for c in all_configs
-        if c.get("search_url_pattern") and "{keyword}" in c["search_url_pattern"]
+        if (c.get("discovery_type") or "site_search") == "site_search"
+        and c.get("search_url_pattern")
+        and "{keyword}" in c["search_url_pattern"]
+    ]
+    rss_configs = [
+        c for c in all_configs
+        if (c.get("discovery_type") or "") == "rss" and c.get("rss_urls")
+    ]
+    sitemap_configs = [
+        c for c in all_configs
+        if (c.get("discovery_type") or "") == "sitemap" and c.get("sitemap_url")
     ]
 
     config_cache: Dict[str, Optional[Dict]] = {}
@@ -75,9 +85,12 @@ async def scrape_configurable_sources(
         if domain:
             config_cache[domain] = config
 
-    _log(scrape_run_id, f"Found {len(searchable_configs)} searchable configs")
-    if not searchable_configs:
-        _log(scrape_run_id, "No searchable configs found (missing search_url_pattern)", logging.WARNING)
+    _log(
+        scrape_run_id,
+        f"Found {len(site_search_configs)} site_search, {len(rss_configs)} rss, {len(sitemap_configs)} sitemap configs",
+    )
+    if not site_search_configs and not rss_configs and not sitemap_configs:
+        _log(scrape_run_id, "No configs with valid discovery strategy found", logging.WARNING)
         return []
 
     discovery_sem = asyncio.Semaphore(DISCOVERY_CONCURRENCY)
@@ -121,7 +134,7 @@ async def scrape_configurable_sources(
                 )
 
         discovery_tasks = []
-        for config in searchable_configs:
+        for config in site_search_configs:
             for keyword in keywords:
                 discovery_tasks.append(
                     search_single_keyword(
@@ -132,6 +145,26 @@ async def scrape_configurable_sources(
                         scrape_run_id=scrape_run_id,
                     )
                 )
+        for config in rss_configs:
+            discovery_tasks.append(
+                discover_via_rss(
+                    client,
+                    config,
+                    from_date=from_date,
+                    discovery_sem=discovery_sem,
+                    scrape_run_id=scrape_run_id,
+                )
+            )
+        for config in sitemap_configs:
+            discovery_tasks.append(
+                discover_via_sitemap(
+                    client,
+                    config,
+                    from_date=from_date,
+                    discovery_sem=discovery_sem,
+                    scrape_run_id=scrape_run_id,
+                )
+            )
 
         discovery_results = await asyncio.gather(*discovery_tasks, return_exceptions=True)
 

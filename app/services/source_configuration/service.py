@@ -1,6 +1,6 @@
 import httpx
 import asyncio
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 from typing import Dict, Optional, List
 from bs4 import BeautifulSoup
 
@@ -151,6 +151,63 @@ class SourceConfigService:
 
         return html
 
+    async def _discover_feed_endpoints(
+        self,
+        root_url: str,
+        homepage_html: str,
+    ) -> Dict:
+        """Discover RSS feeds and news sitemaps for a domain.
+
+        Strategy:
+        1. Parse <link rel="alternate"> tags from homepage HTML (W3C RSS autodiscovery)
+        2. Fetch robots.txt and extract Sitemap: declarations
+
+        Priority: news sitemap > any rss > any sitemap > site_search
+        """
+        rss_urls: List[str] = []
+        sitemap_url: Optional[str] = None
+        news_sitemap_url: Optional[str] = None
+
+        # 1. RSS/Atom autodiscovery from HTML <link> tags
+        try:
+            soup = BeautifulSoup(homepage_html, "lxml")
+            for link in soup.find_all("link", rel="alternate"):
+                link_type = (link.get("type") or "").strip()
+                href = (link.get("href") or "").strip()
+                if link_type in ("application/rss+xml", "application/atom+xml") and href:
+                    rss_urls.append(urljoin(root_url, href))
+        except Exception:
+            pass
+
+        # 2. Sitemaps from robots.txt
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(
+                    f"{root_url}/robots.txt",
+                    headers={"User-Agent": USER_AGENT},
+                    follow_redirects=True,
+                )
+                if resp.status_code == 200:
+                    for line in resp.text.splitlines():
+                        if line.lower().startswith("sitemap:"):
+                            candidate = line.split(":", 1)[1].strip()
+                            if "news" in candidate.lower() and not news_sitemap_url:
+                                news_sitemap_url = candidate
+                            elif not sitemap_url:
+                                sitemap_url = candidate
+        except Exception:
+            pass
+
+        # Determine discovery_type
+        effective_sitemap = news_sitemap_url or (sitemap_url if not rss_urls else None)
+        if news_sitemap_url:
+            return {"rss_urls": rss_urls or None, "sitemap_url": news_sitemap_url, "discovery_type": "sitemap"}
+        if rss_urls:
+            return {"rss_urls": rss_urls, "sitemap_url": sitemap_url, "discovery_type": "rss"}
+        if sitemap_url:
+            return {"rss_urls": None, "sitemap_url": sitemap_url, "discovery_type": "sitemap"}
+        return {"rss_urls": None, "sitemap_url": None, "discovery_type": "site_search"}
+
     async def analyze_url(self, url: str) -> SourceConfigAnalysisResponse:
         """
         Analyze a URL to extract CSS selectors and search patterns.
@@ -194,13 +251,17 @@ class SourceConfigService:
                 root_url=root_url
             )
 
+            # Step 3b: Discover RSS feeds and sitemaps from homepage
+            feed_endpoints = await self._discover_feed_endpoints(root_url, homepage_html)
+
             # Step 4: Save to database
             config_data = SourceConfigCreate(
                 domain=domain,
                 title_selector=analysis_result.get('title_selector'),
                 content_selector=analysis_result.get('content_selector'),
                 date_selector=analysis_result.get('date_selector'),
-                search_url_pattern=analysis_result.get('search_url_pattern')
+                search_url_pattern=analysis_result.get('search_url_pattern'),
+                **feed_endpoints,
             )
 
             saved_config = await self.crud.create_or_update_source_config(config_data)

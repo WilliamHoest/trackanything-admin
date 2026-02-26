@@ -1,6 +1,28 @@
-from typing import Dict, Optional
+import re
+from typing import Dict, List, Optional
 from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup
+
+_DATE_PATH_RE = re.compile(r"/20\d{2}/\d{2}/\d{2}/")
+_ARTICLE_ID_RE = re.compile(r"(?:article|art)\d{5,}|/\d{6,}(?:[./-]|$)", re.IGNORECASE)
+_LONG_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+){3,}$", re.IGNORECASE)
+
+_BLACKLIST = [
+    # Navigation / institutional
+    "kontakt", "contact", "about", "om-os", "/om_", "redaktion",
+    "presse", "jobs", "karriere", "annoncør", "advertise",
+    # Auth / account
+    "login", "log-ind", "log-ud", "signup", "register",
+    "/profile/", "/user/", "minside", "mit-", "min-side",
+    # Commerce
+    "e-avis", "shop", "abonnement", "kundeservice", "tilbud",
+    # Non-content
+    "nyhedsbreve", "newsletter", "arkiv", "annonce",
+    "/podcast/", "/video/", "galleri", "/play/", ".pdf",
+    "/tag/", "/kategori/", "/emne/", "/tema/", "/sektion/",
+    "cookiepolitik", "privatlivspolitik", "auth",
+]
+
 
 class HeuristicAnalyzer:
     """
@@ -9,12 +31,12 @@ class HeuristicAnalyzer:
 
     async def find_article_url_from_html(self, html: str, domain: str) -> Optional[str]:
         """
-        Find ONE valid article URL from HTML using strict validation.
+        Find ONE valid article URL from HTML using strict validation + scoring.
 
         Strategy:
-        - Iterate through all links
-        - Validate each link against blacklist, domain, and path length
-        - Return first valid article URL
+        - Filter links against an expanded blacklist and domain/length checks
+        - Score candidates: date-path > article-ID > long-slug > generic long path
+        - Return highest-scoring candidate
 
         Args:
             html: Raw HTML content
@@ -25,55 +47,53 @@ class HeuristicAnalyzer:
         """
         try:
             soup = BeautifulSoup(html, 'lxml')
-            
-            # Helper for strict validation
-            def is_valid_article_url(url: str, target_domain: str) -> bool:
-                # Substrings that invalidate a URL
-                # We use /slashes/ for short words to avoid matching substrings in valid words
-                # e.g. "tag" matches "fredag", so we use "/tag/"
-                BLACKLIST_KEYWORDS = [
-                    "e-avis", "login", "log-ind", "shop", 
-                    "abonnement", "kundeservice", "auth", ".pdf",
-                    "tilbud", "annonce", "/profile/", "/user/",
-                    "minside", "arkiv", "nyhedsbreve", "/podcast/", 
-                    "/video/", "galleri", "/play/",
-                    "/tag/", "/kategori/", "/emne/", "/tema/", "/sektion/"
-                ]
-                
+            clean_target = domain.replace("www.", "")
+
+            def _score(url: str) -> int:
+                parsed_u = urlparse(url)
+                path = parsed_u.path
+                # Prefer exact domain match over subdomains (e.g. tv2.dk > vejr.tv2.dk)
+                score = 10 if parsed_u.netloc in (clean_target, f"www.{clean_target}") else 0
+                if _DATE_PATH_RE.search(path):
+                    score += 3
+                elif _ARTICLE_ID_RE.search(path):
+                    score += 2
+                else:
+                    segments = [s for s in path.strip("/").split("/") if s]
+                    if any(_LONG_SLUG_RE.match(s) for s in segments):
+                        score += 1
+                return score
+
+            def is_valid_article_url(url: str) -> bool:
                 try:
                     parsed = urlparse(url)
-                    path = parsed.path
                     url_lower = url.lower()
-
-                    # 1. Check Blacklist
-                    if any(keyword in url_lower for keyword in BLACKLIST_KEYWORDS):
+                    if any(kw in url_lower for kw in _BLACKLIST):
                         return False
-
-                    # 2. Check Domain (allow subdomains unless it's e-avis which is caught above)
-                    clean_target = target_domain.replace("www.", "")
                     if clean_target not in parsed.netloc:
                         return False
-
-                    # 3. Check Path Length (Articles usually have long slugs)
-                    if len(path) < 30:
+                    if len(parsed.path) < 30:
                         return False
-                        
                     return True
                 except Exception:
                     return False
 
-            # Iterate through all links
+            candidates: List[tuple[int, str]] = []
             for link in soup.select("a[href]"):
                 href = link.get("href", "")
                 if not href:
                     continue
-
                 full_url = urljoin(f"https://{domain}", href)
-                
-                if is_valid_article_url(full_url, domain):
-                    return full_url
+                if is_valid_article_url(full_url):
+                    score = _score(full_url)
+                    candidates.append((score, full_url))
 
-            return None
+            if not candidates:
+                return None
+
+            # Return highest-scoring candidate (stable sort keeps DOM order for ties)
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            return candidates[0][1]
 
         except Exception as e:
             print(f"   ⚠️ Error finding article URL: {e}")

@@ -547,10 +547,11 @@ class SupabaseCRUD:
             if existing:
                 # Update existing config
                 data = config.model_dump(exclude_unset=True, exclude_none=True)
-                # Ensure search_url_pattern is included if present in config
-                if hasattr(config, 'search_url_pattern'):
-                    data['search_url_pattern'] = config.search_url_pattern
-                    
+                # Explicitly include fields that may legitimately be None (to allow clearing)
+                for field in ("search_url_pattern", "rss_urls", "sitemap_url", "discovery_type"):
+                    if hasattr(config, field):
+                        data[field] = getattr(config, field)
+
                 result = self.supabase.table("source_configs").update(data).eq("domain", config.domain).execute()
                 return result.data[0] if result.data else None
             else:
@@ -561,6 +562,9 @@ class SupabaseCRUD:
                     "content_selector": config.content_selector,
                     "date_selector": config.date_selector,
                     "search_url_pattern": config.search_url_pattern,
+                    "rss_urls": config.rss_urls,
+                    "sitemap_url": config.sitemap_url,
+                    "discovery_type": config.discovery_type,
                     "created_at": datetime.utcnow().isoformat(),
                     "updated_at": datetime.utcnow().isoformat()
                 }

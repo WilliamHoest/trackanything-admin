@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional
+from typing import List, Optional
 from datetime import datetime
 import uuid
 
@@ -10,6 +10,9 @@ class SourceConfigBase(BaseModel):
     content_selector: Optional[str] = Field(None, description="CSS selector for article content", max_length=500)
     date_selector: Optional[str] = Field(None, description="CSS selector for publication date", max_length=500)
     search_url_pattern: Optional[str] = Field(None, description="URL pattern for searching. Use {keyword} as placeholder (e.g., https://domain.com/search?q={keyword})", max_length=500)
+    rss_urls: Optional[List[str]] = Field(None, description="RSS/Atom feed URLs (used when discovery_type=rss)")
+    sitemap_url: Optional[str] = Field(None, description="News sitemap URL (used when discovery_type=sitemap)", max_length=500)
+    discovery_type: Optional[str] = Field(None, description="Discovery strategy: rss | sitemap | site_search")
 
     @field_validator('domain')
     @classmethod
@@ -42,6 +45,9 @@ class SourceConfigUpdate(BaseModel):
     content_selector: Optional[str] = Field(None, max_length=500)
     date_selector: Optional[str] = Field(None, max_length=500)
     search_url_pattern: Optional[str] = Field(None, max_length=500)
+    rss_urls: Optional[List[str]] = None
+    sitemap_url: Optional[str] = Field(None, max_length=500)
+    discovery_type: Optional[str] = None
 
 
 class SourceConfigResponse(SourceConfigBase):
