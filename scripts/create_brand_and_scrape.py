@@ -9,6 +9,7 @@ Usage examples:
   ./venv/bin/python scripts/create_brand_and_scrape.py \
     --preset usa_qa \
     --source-brand "USA" \
+        
     --append-timestamp
 
   # Fully custom topics/keywords

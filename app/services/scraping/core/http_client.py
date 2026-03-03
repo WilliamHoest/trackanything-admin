@@ -56,12 +56,17 @@ def get_default_headers() -> dict:
 def _is_retryable_error(exception: Exception) -> bool:
     """
     Retry ONLY on:
-    - httpx.RequestError (network/transport issues)
+    - httpx.RequestError (network/transport issues), excluding timeouts
     - HTTP 429 (rate limiting)
     - HTTP 5xx (server errors)
 
-    Fail fast on client errors such as 400/401/403/404 (and other non-429 4xx).
+    Fail fast on:
+    - httpx.TimeoutException: retrying a slow/dead server wastes time
+    - Client errors such as 400/401/403/404 (and other non-429 4xx).
     """
+    if isinstance(exception, httpx.TimeoutException):
+        return False  # Fail fast — dead or slow sources should not block the pipeline
+
     if isinstance(exception, httpx.RequestError):
         return True
 

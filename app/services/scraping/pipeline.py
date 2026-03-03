@@ -207,6 +207,9 @@ async def process_brand_scrape(
         # Brand-level language filter; falls back to global default
         brand_languages = brand.get("allowed_languages") or settings.scraping_default_languages_list
 
+        brand_description = (brand.get("description") or "").strip()
+        brand_context = f"{brand_name}: {brand_description}" if brand_description else brand_name
+
         mentions = await fetch_and_filter_mentions(
             query_list,
             apply_relevance_filter=apply_relevance_filter,
@@ -214,6 +217,7 @@ async def process_brand_scrape(
             scrape_run_id=scrape_run_id,
             allowed_languages=brand_languages,
             artifact_label=brand_name,
+            brand_context=brand_context,
         )
 
         if settings.scraping_historical_dedup_enabled and mentions:

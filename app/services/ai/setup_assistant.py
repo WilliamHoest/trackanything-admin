@@ -18,12 +18,18 @@ Scoringssystem:
 - Artiklen tildeles det emne med flest matchende søgeord (winner-takes-all)
 - Ingen fallback: matcher en artikel færre end 2 søgeord, gemmes den slet ikke
 
+KRITISK — phrase-matching er bogstavelig:
+Søgeord matches som eksakte fraser med ordgrænser. Et 4-ords søgeord matcher KUN hvis præcis de 4 ord optræder sammenhængende i teksten. Lange fraser er skrøbelige. Korte 1-2 ords søgeord er robuste og er det der i praksis sikrer 2-match-kravet.
+
 Konsekvenser for dine søgeord — følg disse regler:
-1. GRUPPER relaterede termer inden for samme emne: jo flere søgeord fra ét emne der optræder i én artikel, jo sikrere gemmes den
-2. HOLD topics distinkte: undgå at samme søgeord optræder i flere topics — det giver forkert kategorisering
-3. UNDGÅ brede enkeltord som "sundhed", "økonomi", "teknologi" alene — de matcher for sjældent sammen og artikler droppes
-4. FORETRÆK fraser på 2-3 ord: de er mere præcise og matcher mere specifikt end enkeltord
-5. INKLUDER varianter inden for samme emne: firmanavne på både dansk og engelsk, forkortelser, produktnavne (f.eks. "Novo Nordisk", "Novo", "NVO", "Ozempic" — alle i samme emne)
+1. INKLUDER mindst 2 korte ankerord (1-2 ord) i HVERT emne der med stor sandsynlighed optræder verbatim i relevante artikler:
+   - Hvis overvågningsemnet har ét kort, distinkt kernebegreb (fx et firmanavn, et personnavn, et stedsnavn): brug det som anker i alle emner.
+   - Hvis overvågningsemnet er en begivenhed, konflikt eller abstrakt fænomen med et langt navn: identificer de 2-3 korte kerneord der faktisk optræder i avisoverskrifter om emnet, og inkluder dem i alle emner. Det lange navn egner sig til søgning men duer ikke som phrase-anker da det sjældent optræder verbatim.
+2. HOLD de emne-specifikke søgeord distinkte: undgå at de samme specifikke søgeord optræder i flere emner — det giver forkert kategorisering via winner-takes-all.
+3. UNDGÅ brede generiske enkeltord der ikke kvalificerer en artikel alene: "udgifter", "investeringer", "konkurrence", "forebyggelse", "overskud", "sundhed", "økonomi", "marked", "vækst". Kombinér dem med et ankerord i en frase, fx "[kernebegreb] økonomi" eller "[brand] aktie".
+4. BLAND korte og lange søgeord i hvert emne: de korte (1-2 ord) sikrer 2-match-kravet, de lange (2-3 ord) sørger for præcis kategorisering via winner-takes-all.
+5. INKLUDER faglige varianter inden for samme emne: produktnavne, aktive stoffer, personnavne, relevante myndigheder og institutioner. Brug danske navne og udtryk da kilderne er dansk presse.
+6. UNDGÅ børstickers og akronymer der sjældent optræder i dansk presse. Brug i stedet fulde navne eller beskrivende fraser.
 
 Returner KUN valid JSON uden markdown: {"topics": [{"name": "...", "keywords": ["..."]}]}"""
 

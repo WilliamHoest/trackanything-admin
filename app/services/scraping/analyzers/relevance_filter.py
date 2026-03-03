@@ -8,7 +8,7 @@ to their associated keywords/brand context before saving to database.
 import httpx
 import logging
 import asyncio
-from typing import List, Dict, Tuple
+from typing import List, Dict, Optional, Tuple
 from app.core.config import settings
 
 logger = logging.getLogger("scraping.relevance_filter")
@@ -91,14 +91,18 @@ class RelevanceFilter:
     async def filter_mentions(
         self,
         mentions: List[Dict],
-        keywords: List[str]
+        keywords: List[str],
+        brand_context: Optional[str] = None,
     ) -> List[Dict]:
         """
-        Filter a list of mentions in PARALLEL, keeping only those relevant to the keywords.
+        Filter a list of mentions in PARALLEL, keeping only those relevant to the brand.
 
         Args:
             mentions: List of mention dictionaries with 'title' and optionally 'content_teaser'
-            keywords: List of keywords to check relevance against
+            keywords: List of keywords to check relevance against (fallback context)
+            brand_context: Human-readable brand description used as primary filter context.
+                           When provided, used instead of raw keywords so the AI understands
+                           the monitoring purpose (e.g. "Lego: dansk legetøjsproducent ...").
 
         Returns:
             Filtered list containing only relevant mentions
@@ -106,19 +110,20 @@ class RelevanceFilter:
         if not mentions:
             return []
 
-        if not keywords:
-            logger.warning("No keywords provided for filtering, returning all mentions")
-            return mentions
-
         if not self.api_key:
             logger.warning("DEEPSEEK_API_KEY not configured, skipping AI filter")
             return mentions
 
-        # Prepare context
-        # Limit context length to avoid huge prompts if many keywords exist
-        context = ", ".join(keywords[:20]) # Take top 20 keywords max to keep prompt focused
-        if len(keywords) > 20:
-            context += "..."
+        # Use brand description as context when available; fall back to keyword list.
+        if brand_context:
+            context = brand_context
+        elif keywords:
+            context = ", ".join(keywords[:20])
+            if len(keywords) > 20:
+                context += "..."
+        else:
+            logger.warning("No context for AI filter, returning all mentions")
+            return mentions
 
         logger.info(f"🤖 Starting parallel AI relevance check for {len(mentions)} mentions...")
 

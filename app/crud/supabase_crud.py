@@ -468,6 +468,64 @@ class SupabaseCRUD:
             print(f"Error creating keyword: {e}")
             return None
 
+    async def bulk_create_topics(self, names: List[str], brand_id: int) -> List[Dict[str, Any]]:
+        """Bulk insert topics for a brand in a single DB call. Returns created records with IDs."""
+        try:
+            now = datetime.utcnow().isoformat()
+            rows = [
+                {"name": name, "brand_id": brand_id, "is_active": True, "created_at": now}
+                for name in names
+            ]
+            result = self.supabase.table("topics").insert(rows).execute()
+            return result.data or []
+        except Exception as e:
+            print(f"Error bulk creating topics: {e}")
+            return []
+
+    async def bulk_create_keywords_for_topics(
+        self, pairs: List[Tuple[int, str]]
+    ) -> int:
+        """
+        Efficiently create keywords and topic_keywords junction rows in 3 DB calls.
+
+        Args:
+            pairs: List of (topic_id, keyword_text) tuples.
+
+        Returns:
+            Number of junction rows created.
+        """
+        if not pairs:
+            return 0
+        try:
+            all_texts = list({text for _, text in pairs})
+
+            # 1. Fetch already-existing keywords in one query
+            existing_result = self.supabase.table("keywords").select("id, text").in_("text", all_texts).execute()
+            text_to_id: Dict[str, int] = {row["text"]: row["id"] for row in (existing_result.data or [])}
+
+            # 2. Insert missing keywords in one batch
+            missing = [t for t in all_texts if t not in text_to_id]
+            if missing:
+                now = datetime.utcnow().isoformat()
+                new_rows = [{"text": t, "created_at": now} for t in missing]
+                new_result = self.supabase.table("keywords").insert(new_rows).execute()
+                for row in (new_result.data or []):
+                    text_to_id[row["text"]] = row["id"]
+
+            # 3. Bulk insert junction rows
+            junction_rows = [
+                {"topic_id": topic_id, "keyword_id": text_to_id[text]}
+                for topic_id, text in pairs
+                if text in text_to_id
+            ]
+            if not junction_rows:
+                return 0
+            result = self.supabase.table("topic_keywords").insert(junction_rows).execute()
+            return len(result.data or [])
+        except Exception as e:
+            print(f"Error bulk creating keywords: {e}")
+            return 0
+
     async def get_keyword(self, keyword_id: int) -> Optional[Dict[str, Any]]:
         """Get keyword by ID"""
         try:

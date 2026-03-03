@@ -7,8 +7,6 @@ from app.schemas.ai_setup import (
     AISaveSetupRequest,
 )
 from app.schemas.brand import BrandCreate
-from app.schemas.topic import TopicCreate
-from app.schemas.keyword import KeywordCreate
 from app.security.auth import get_current_user
 from app.core.supabase_db import get_supabase_crud
 from app.crud.supabase_crud import SupabaseCRUD
@@ -64,21 +62,22 @@ async def ai_save_setup(
         )
 
     brand_id: int = brand["id"]
-    topics_created = 0
-    keywords_created = 0
 
-    # 2. Create topics and keywords
-    for topic_data in request.topics:
-        topic = await crud.create_topic(TopicCreate(name=topic_data.name), brand_id)
-        if not topic:
-            continue
-        topics_created += 1
-        topic_id: int = topic["id"]
+    # 2. Bulk create all topics in one DB call
+    created_topics = await crud.bulk_create_topics(
+        [t.name for t in request.topics], brand_id
+    )
+    topics_created = len(created_topics)
 
-        for keyword_text in topic_data.keywords:
-            result = await crud.create_keyword(KeywordCreate(text=keyword_text), topic_id)
-            if result:
-                keywords_created += 1
+    # 3. Bulk create all keywords + junction rows in 3 DB calls
+    name_to_id = {t["name"]: t["id"] for t in created_topics}
+    pairs = [
+        (name_to_id[topic_data.name], kw)
+        for topic_data in request.topics
+        if topic_data.name in name_to_id
+        for kw in topic_data.keywords
+    ]
+    keywords_created = await crud.bulk_create_keywords_for_topics(pairs)
 
     return AIAutoSetupResponse(
         brand_id=brand_id,

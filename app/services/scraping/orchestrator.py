@@ -419,6 +419,7 @@ async def fetch_and_filter_mentions(
     scrape_run_id: Optional[str] = None,
     allowed_languages: Optional[List[str]] = None,
     artifact_label: Optional[str] = None,
+    brand_context: Optional[str] = None,
 ) -> List[Dict]:
     """
     Fetch mentions from all sources and optionally filter by AI relevance.
@@ -478,7 +479,7 @@ async def fetch_and_filter_mentions(
 
     if apply_relevance_filter and sanitized_keywords:
         _run_log(scrape_run_id, f"Running AI relevance filter on {len(mentions)} mentions...")
-        filtered_mentions = await relevance_filter.filter_mentions(mentions, sanitized_keywords)
+        filtered_mentions = await relevance_filter.filter_mentions(mentions, sanitized_keywords, brand_context=brand_context)
         filtered_count = len(mentions) - len(filtered_mentions)
         _run_log(
             scrape_run_id,
