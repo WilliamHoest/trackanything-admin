@@ -1,7 +1,14 @@
 from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional
+from pydantic import model_validator
+from typing import List, Literal, Optional
 from datetime import datetime
 import uuid
+from urllib.parse import urlparse
+
+
+def _is_valid_absolute_http_url(value: str) -> bool:
+    parsed = urlparse((value or "").strip())
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 class SourceConfigBase(BaseModel):
     """Base schema for source configuration"""
@@ -12,7 +19,10 @@ class SourceConfigBase(BaseModel):
     search_url_pattern: Optional[str] = Field(None, description="URL pattern for searching. Use {keyword} as placeholder (e.g., https://domain.com/search?q={keyword})", max_length=500)
     rss_urls: Optional[List[str]] = Field(None, description="RSS/Atom feed URLs (used when discovery_type=rss)")
     sitemap_url: Optional[str] = Field(None, description="News sitemap URL (used when discovery_type=sitemap)", max_length=500)
-    discovery_type: Optional[str] = Field(None, description="Discovery strategy: rss | sitemap | site_search")
+    discovery_type: Optional[Literal["rss", "sitemap", "site_search"]] = Field(
+        None,
+        description="Discovery strategy: rss | sitemap | site_search",
+    )
 
     @field_validator('domain')
     @classmethod
@@ -33,10 +43,61 @@ class SourceConfigBase(BaseModel):
             domain = domain[4:]
         return domain
 
-
 class SourceConfigCreate(SourceConfigBase):
     """Schema for creating a new source configuration"""
-    pass
+    @field_validator("search_url_pattern")
+    @classmethod
+    def validate_search_url_pattern(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        value = v.strip()
+        if not value:
+            return None
+        if "{keyword}" not in value:
+            raise ValueError("search_url_pattern must include the {keyword} placeholder")
+        if not _is_valid_absolute_http_url(value.replace("{keyword}", "test")):
+            raise ValueError("search_url_pattern must be an absolute http(s) URL pattern")
+        return value
+
+    @field_validator("rss_urls")
+    @classmethod
+    def validate_rss_urls(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return None
+        cleaned: List[str] = []
+        for url in v:
+            candidate = (url or "").strip()
+            if not candidate:
+                continue
+            if not _is_valid_absolute_http_url(candidate):
+                raise ValueError("rss_urls must contain absolute http(s) URLs")
+            cleaned.append(candidate)
+        return cleaned or None
+
+    @field_validator("sitemap_url")
+    @classmethod
+    def validate_sitemap_url(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        value = v.strip()
+        if not value:
+            return None
+        if not _is_valid_absolute_http_url(value):
+            raise ValueError("sitemap_url must be an absolute http(s) URL")
+        return value
+
+    @model_validator(mode="after")
+    def validate_discovery_fields(self):
+        if self.discovery_type == "rss" and not self.rss_urls:
+            raise ValueError("discovery_type='rss' requires rss_urls")
+        if self.discovery_type == "sitemap" and not self.sitemap_url:
+            raise ValueError("discovery_type='sitemap' requires sitemap_url")
+        if self.discovery_type == "site_search":
+            if not self.search_url_pattern:
+                raise ValueError("discovery_type='site_search' requires search_url_pattern")
+            if "{keyword}" not in self.search_url_pattern:
+                raise ValueError("search_url_pattern must include {keyword} for site_search")
+        return self
 
 
 class SourceConfigUpdate(BaseModel):
@@ -47,7 +108,61 @@ class SourceConfigUpdate(BaseModel):
     search_url_pattern: Optional[str] = Field(None, max_length=500)
     rss_urls: Optional[List[str]] = None
     sitemap_url: Optional[str] = Field(None, max_length=500)
-    discovery_type: Optional[str] = None
+    discovery_type: Optional[Literal["rss", "sitemap", "site_search"]] = None
+
+    @field_validator("search_url_pattern")
+    @classmethod
+    def validate_search_url_pattern(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        value = v.strip()
+        if not value:
+            return None
+        if "{keyword}" not in value:
+            raise ValueError("search_url_pattern must include the {keyword} placeholder")
+        if not _is_valid_absolute_http_url(value.replace("{keyword}", "test")):
+            raise ValueError("search_url_pattern must be an absolute http(s) URL pattern")
+        return value
+
+    @field_validator("rss_urls")
+    @classmethod
+    def validate_rss_urls(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return None
+        cleaned: List[str] = []
+        for url in v:
+            candidate = (url or "").strip()
+            if not candidate:
+                continue
+            if not _is_valid_absolute_http_url(candidate):
+                raise ValueError("rss_urls must contain absolute http(s) URLs")
+            cleaned.append(candidate)
+        return cleaned or None
+
+    @field_validator("sitemap_url")
+    @classmethod
+    def validate_sitemap_url(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        value = v.strip()
+        if not value:
+            return None
+        if not _is_valid_absolute_http_url(value):
+            raise ValueError("sitemap_url must be an absolute http(s) URL")
+        return value
+
+    @model_validator(mode="after")
+    def validate_discovery_fields(self):
+        if self.discovery_type == "rss" and not self.rss_urls:
+            raise ValueError("discovery_type='rss' requires rss_urls in update payload")
+        if self.discovery_type == "sitemap" and not self.sitemap_url:
+            raise ValueError("discovery_type='sitemap' requires sitemap_url in update payload")
+        if self.discovery_type == "site_search":
+            if not self.search_url_pattern:
+                raise ValueError("discovery_type='site_search' requires search_url_pattern in update payload")
+            if "{keyword}" not in self.search_url_pattern:
+                raise ValueError("search_url_pattern must include {keyword} for site_search")
+        return self
 
 
 class SourceConfigResponse(SourceConfigBase):
