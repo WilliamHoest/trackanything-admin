@@ -28,7 +28,7 @@ class RelevanceFilter:
     TIMEOUT_SECONDS = 15.0  # Increased slightly for parallel batches
 
     def __init__(self):
-        self.api_key = settings.deepseek_api_key
+        self.api_key = settings.deepseek_api_key.get_secret_value()
         self.model = settings.deepseek_model
 
     async def _check_single_relevance(self, client: httpx.AsyncClient, text: str, context: str, index: int) -> Tuple[int, bool]:

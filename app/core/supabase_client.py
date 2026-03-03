@@ -10,7 +10,7 @@ class SupabaseClient:
         if cls._instance is None:
             cls._instance = create_client(
                 supabase_url=settings.supabase_url,
-                supabase_key=settings.supabase_key
+                supabase_key=settings.supabase_key.get_secret_value()
             )
         return cls._instance
 
@@ -19,7 +19,7 @@ class SupabaseClient:
         if cls._admin_instance is None:
             cls._admin_instance = create_client(
                 supabase_url=settings.supabase_url,
-                supabase_key=settings.supabase_service_role_key
+                supabase_key=settings.supabase_service_role_key.get_secret_value()
             )
         return cls._admin_instance
 

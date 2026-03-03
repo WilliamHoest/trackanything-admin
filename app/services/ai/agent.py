@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 def _create_deepseek_model() -> OpenAIModel:
     """Build a DeepSeek model instance without mutating global environment variables."""
-    provider = DeepSeekProvider(api_key=settings.deepseek_api_key)
+    provider = DeepSeekProvider(api_key=settings.deepseek_api_key.get_secret_value())
     return OpenAIModel(settings.deepseek_model, provider=provider)
 
 

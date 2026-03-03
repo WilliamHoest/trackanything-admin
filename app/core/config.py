@@ -1,4 +1,5 @@
 from typing import List
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 
@@ -6,14 +7,14 @@ load_dotenv()
 
 class Settings(BaseSettings):
     supabase_url: str
-    supabase_key: str
-    supabase_service_role_key: str  # Needed for admin operations (creating users)
-    deepseek_api_key: str
+    supabase_key: SecretStr
+    supabase_service_role_key: SecretStr  # Needed for admin operations (creating users)
+    deepseek_api_key: SecretStr
     deepseek_model: str = "deepseek-chat"  # DeepSeek V3 model for relevance filtering
-    gnews_api_key: str
+    gnews_api_key: SecretStr
     gnews_max_results: int = 10
-    serpapi_key: str
-    tavily_api_key: str = ""  # Optional web search tool
+    serpapi_key: SecretStr
+    tavily_api_key: SecretStr = SecretStr("")  # Optional web search tool
     database_url: str = ""  # PostgreSQL connection string
     host: str = "0.0.0.0"
     port: int = 8000

@@ -234,7 +234,7 @@ async def scrape_serpapi(
 
             params: Dict[str, Any] = {
                 "q": provider_query,
-                "api_key": settings.serpapi_key,
+                "api_key": settings.serpapi_key.get_secret_value(),
                 "num": 20,
                 "hl": SERPAPI_DEFAULT_HL,
                 "gl": SERPAPI_DEFAULT_GL,

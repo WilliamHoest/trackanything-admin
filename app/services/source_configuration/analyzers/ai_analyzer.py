@@ -39,7 +39,7 @@ class AIAnalyzer:
         # --- 2. AI Verification ---
         try:
             client = AsyncOpenAI(
-                api_key=settings.deepseek_api_key,
+                api_key=settings.deepseek_api_key.get_secret_value(),
                 base_url="https://api.deepseek.com"
             )
             
@@ -204,7 +204,7 @@ Return ONLY JSON: {\"is_valid\": true/false}"""
 
         try:
             print(f"   🤖 Detecting search pattern on homepage via AI...")
-            client = AsyncOpenAI(api_key=settings.deepseek_api_key, base_url="https://api.deepseek.com")
+            client = AsyncOpenAI(api_key=settings.deepseek_api_key.get_secret_value(), base_url="https://api.deepseek.com")
 
             search_prompt = """Analyze this Homepage HTML and find the SEARCH URL pattern.
 Look for <form action=\"...\"> or <input name=\"q\">

@@ -25,7 +25,7 @@ def get_tavily_client() -> Optional[TavilyClient]:
     global _tavily_client
     if _tavily_client is None and settings.tavily_api_key:
         try:
-            _tavily_client = TavilyClient(api_key=settings.tavily_api_key)
+            _tavily_client = TavilyClient(api_key=settings.tavily_api_key.get_secret_value())
             logger.info("Tavily client initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize Tavily client: {e}")

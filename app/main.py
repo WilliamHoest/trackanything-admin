@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Response
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,19 +13,10 @@ import logging
 setup_logging()
 logger = logging.getLogger(__name__)
 
-# Enable detailed HTTP logging for debugging AI requests
-logging.getLogger('httpx').setLevel(logging.DEBUG)
-logging.getLogger('httpcore').setLevel(logging.DEBUG)
-
-app = FastAPI(
-    title="TrackAnything Admin API",
-    description="Backend API for TrackAnything admin application with Supabase REST API",
-    version="3.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc"
-)
-
-logger.info("TrackAnything Admin API starting...")
+# httpx/httpcore log level: verbose in debug mode, silent in production
+_http_log_level = logging.DEBUG if settings.debug else logging.WARNING
+logging.getLogger('httpx').setLevel(_http_log_level)
+logging.getLogger('httpcore').setLevel(_http_log_level)
 
 
 def _log_scraping_provider_toggles() -> None:
@@ -43,9 +35,21 @@ def _log_scraping_provider_toggles() -> None:
     )
 
 
-@app.on_event("startup")
-async def log_startup_provider_state() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("TrackAnything Admin API starting...")
     _log_scraping_provider_toggles()
+    yield
+
+
+app = FastAPI(
+    title="TrackAnything Admin API",
+    description="Backend API for TrackAnything admin application with Supabase REST API",
+    version="3.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    lifespan=lifespan,
+)
 
 # Configure CORS
 app.add_middleware(

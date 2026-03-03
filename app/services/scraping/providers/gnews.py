@@ -232,7 +232,7 @@ async def scrape_gnews(
 
                 params: Dict[str, str] = {
                     "q": query,
-                    "token": settings.gnews_api_key,
+                    "token": settings.gnews_api_key.get_secret_value(),
                     "max": str(max_results),
                     "sortby": "publishedAt",
                     "from": _to_gnews_iso(since),

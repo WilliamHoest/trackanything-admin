@@ -15,7 +15,7 @@ def get_admin_client():
     """Get Supabase client with service role key (bypasses RLS)"""
     return create_client(
         supabase_url=settings.supabase_url,
-        supabase_key=settings.supabase_service_role_key
+        supabase_key=settings.supabase_service_role_key.get_secret_value()
     )
 
 def main():
