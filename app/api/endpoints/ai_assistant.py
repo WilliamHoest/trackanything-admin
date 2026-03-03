@@ -1,5 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from app.schemas.ai_setup import AIAutoSetupRequest, AIAutoSetupResponse
+from app.schemas.ai_setup import (
+    AIAutoSetupRequest,
+    AIAutoSetupResponse,
+    AIGenerateRequest,
+    AIGenerateResponse,
+    AISaveSetupRequest,
+)
 from app.schemas.brand import BrandCreate
 from app.schemas.topic import TopicCreate
 from app.schemas.keyword import KeywordCreate
@@ -11,13 +17,84 @@ from app.services.ai.setup_assistant import generate_setup
 router = APIRouter()
 
 
+@router.post("/generate", response_model=AIGenerateResponse)
+async def ai_generate(
+    request: AIGenerateRequest,
+    current_user=Depends(get_current_user),
+):
+    """Generate brand monitoring topics and keywords via AI — nothing is saved to Supabase."""
+    try:
+        topics = await generate_setup(request.brand_name, request.description)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"AI generation failed: {str(e)}",
+        )
+
+    if not topics:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="AI returned no topics",
+        )
+
+    return AIGenerateResponse(topics=topics)
+
+
+@router.post("/save", response_model=AIAutoSetupResponse, status_code=status.HTTP_201_CREATED)
+async def ai_save_setup(
+    request: AISaveSetupRequest,
+    crud: SupabaseCRUD = Depends(get_supabase_crud),
+    current_user=Depends(get_current_user),
+):
+    """Persist user-reviewed AI setup (brand + topics + keywords) to Supabase."""
+    # 1. Create brand with full config
+    brand = await crud.create_brand(
+        BrandCreate(
+            name=request.brand_name,
+            description=request.description,
+            scrape_frequency_hours=request.scrape_frequency_hours,
+            initial_lookback_days=request.initial_lookback_days,
+        ),
+        current_user.id,
+    )
+    if not brand:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create brand",
+        )
+
+    brand_id: int = brand["id"]
+    topics_created = 0
+    keywords_created = 0
+
+    # 2. Create topics and keywords
+    for topic_data in request.topics:
+        topic = await crud.create_topic(TopicCreate(name=topic_data.name), brand_id)
+        if not topic:
+            continue
+        topics_created += 1
+        topic_id: int = topic["id"]
+
+        for keyword_text in topic_data.keywords:
+            result = await crud.create_keyword(KeywordCreate(text=keyword_text), topic_id)
+            if result:
+                keywords_created += 1
+
+    return AIAutoSetupResponse(
+        brand_id=brand_id,
+        brand_name=request.brand_name,
+        topics_created=topics_created,
+        keywords_created=keywords_created,
+    )
+
+
 @router.post("/auto-setup", response_model=AIAutoSetupResponse, status_code=status.HTTP_201_CREATED)
 async def ai_auto_setup(
     request: AIAutoSetupRequest,
     crud: SupabaseCRUD = Depends(get_supabase_crud),
     current_user=Depends(get_current_user),
 ):
-    """Generate brand monitoring setup via AI and persist it to Supabase."""
+    """Generate brand monitoring setup via AI and persist it to Supabase (legacy endpoint)."""
     # 1. Generate topics + keywords with AI
     try:
         topics = await generate_setup(request.brand_name, request.description)
