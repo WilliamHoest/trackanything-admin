@@ -17,6 +17,7 @@ from app.services.scraping.orchestrator import fetch_and_filter_mentions
 scraping_logger = logging.getLogger("scraping")
 
 
+
 @dataclass
 class BrandScrapeResult:
     message: str
@@ -60,8 +61,14 @@ def _build_keyword_boundary_pattern(keyword_text: str) -> Tuple[Optional[re.Patt
 
 
 def score_topic_match(topic_keywords: List[Dict], title: str, teaser: str) -> Tuple[int, List[Dict]]:
+    """
+    Score a mention against a topic's keywords.
+
+    Score = number of distinct keywords found anywhere in title or teaser.
+    Each keyword counts once regardless of where it appears or how long it is.
+    matched_in is tracked per match for audit purposes only.
+    """
     matches = []
-    score = 0
 
     for keyword in topic_keywords:
         keyword_text = keyword.get("text", "")
@@ -74,7 +81,6 @@ def score_topic_match(topic_keywords: List[Dict], title: str, teaser: str) -> Tu
             keyword["_normalized_keyword"] = normalized_keyword
         else:
             cached_pattern = keyword.get("_compiled_pattern")
-            normalized_keyword = keyword.get("_normalized_keyword", "")
 
         if cached_pattern is None:
             continue
@@ -85,20 +91,15 @@ def score_topic_match(topic_keywords: List[Dict], title: str, teaser: str) -> Tu
             continue
 
         matched_in = "both" if in_title and in_teaser else "title" if in_title else "teaser"
-        keyword_score = (2 if in_title else 0) + (1 if in_teaser else 0)
-        if len(normalized_keyword) >= 8:
-            keyword_score += 1
-
         matches.append(
             {
                 "keyword": keyword,
                 "matched_in": matched_in,
-                "score": keyword_score,
+                "score": 1,
             }
         )
-        score += keyword_score
 
-    return score, matches
+    return len(matches), matches
 
 
 def _normalize_last_scraped_at(last_scraped_at: object) -> Optional[datetime]:
@@ -279,7 +280,7 @@ async def process_brand_scrape(
                     continue
 
                 best_topic = None
-                best_topic_score = -1
+                best_topic_score = 0
                 best_topic_matches: List[Dict] = []
                 title = (mention.get("title") or "").lower()
                 teaser = (mention.get("content_teaser") or "").lower()
@@ -292,15 +293,14 @@ async def process_brand_scrape(
                         best_topic = topic
                         best_topic_matches = topic_matches
 
-                if not best_topic:
-                    best_topic = active_topics[0]
-                    best_topic_matches = []
+                if best_topic_score < settings.scraping_min_keyword_matches:
+                    continue  # Drop mention — insufficient keyword matches, no fallback
 
                 primary_keyword_id = None
                 if best_topic_matches:
                     best_match = sorted(
                         best_topic_matches,
-                        key=lambda match: (match["score"], len(match["keyword"].get("text", ""))),
+                        key=lambda match: len(match["keyword"].get("text", "")),
                         reverse=True,
                     )[0]
                     primary_keyword_id = best_match["keyword"].get("id")
@@ -334,6 +334,10 @@ async def process_brand_scrape(
                 error_msg = f"Error preparing mention '{mention.get('title', 'Unknown')}': {exc}"
                 errors.append(error_msg)
                 _log(scrape_run_id, error_msg, logging.ERROR)
+
+        dropped = len(mentions) - len(mentions_to_insert)
+        if dropped:
+            _log(scrape_run_id, f"Dropped {dropped} mentions (fewer than {settings.scraping_min_keyword_matches} keyword matches)")
 
         mentions_saved = 0
         if mentions_to_insert:

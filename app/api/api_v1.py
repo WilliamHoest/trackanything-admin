@@ -11,7 +11,8 @@ from app.api.endpoints import (
     chat_history,
     reports_supabase,
     admin_supabase,
-    admin_sources
+    admin_sources,
+    ai_assistant,
 )
 
 api_router = APIRouter()
@@ -29,3 +30,4 @@ api_router.include_router(chat_history.router, prefix="/chats", tags=["chats"])
 api_router.include_router(reports_supabase.router, prefix="/reports", tags=["reports"])
 api_router.include_router(admin_supabase.router, prefix="/admin", tags=["admin"])
 api_router.include_router(admin_sources.router, prefix="/admin/sources", tags=["admin-sources"])
+api_router.include_router(ai_assistant.router, prefix="/ai", tags=["ai"])
