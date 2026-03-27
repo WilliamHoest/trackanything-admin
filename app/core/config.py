@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     scraping_historical_dedup_days: int = 3
     scraping_historical_dedup_limit: int = 1000
     scraping_fuzzy_dedup_enabled: bool = True
-    scraping_min_keyword_matches: int = 2
+    scraping_min_keyword_matches: int = 1
     scraping_fuzzy_dedup_threshold: int = 92
     scraping_fuzzy_dedup_day_window: int = 2
     scraping_run_artifacts_enabled: bool = True

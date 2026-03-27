@@ -29,7 +29,7 @@ from app.services.scraping.core.run_artifacts import (
 )
 from app.core.config import settings
 
-AI_RELEVANCE_FILTER_ENABLED = True
+AI_RELEVANCE_FILTER_ENABLED = False
 logger = logging.getLogger("scraping")
 
 

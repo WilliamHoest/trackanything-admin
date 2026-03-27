@@ -45,11 +45,16 @@ async def mark_mention_as_read(
     """
     Mark a mention as read or unread using Supabase REST API.
     """
+    mention = await crud.get_mention_by_id(mention_id)
+    if not mention:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mention not found")
+
+    brand = await crud.get_brand(mention.get("brand_id"))
+    if not brand or brand.get("profile_id") != str(current_user.id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mention not found")
+
     result = await crud.update_mention_read_status(mention_id, read_status)
     if not result:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Mention not found"
-        )
-    
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mention not found")
+
     return result
