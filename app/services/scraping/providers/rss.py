@@ -253,8 +253,27 @@ def _locale_attempts(allowed_languages: Optional[List[str]]) -> List[tuple[str, 
     return deduped
 
 
-def _build_rss_url(keyword: str, locale: Dict[str, str]) -> str:
+def _build_when_param(from_date: Optional[datetime]) -> Optional[str]:
+    """Convert from_date to Google News RSS 'when' parameter (e.g. '7d', '30d')."""
+    if from_date is None:
+        return None
+    now = datetime.now(timezone.utc)
+    delta = now - from_date.astimezone(timezone.utc)
+    days = max(1, delta.days + 1)  # +1 to avoid missing same-day articles
+    if days <= 1:
+        return "1d"
+    if days <= 7:
+        return "7d"
+    if days <= 30:
+        return "1m"
+    return None  # Google News RSS doesn't support longer windows reliably
+
+
+def _build_rss_url(keyword: str, locale: Dict[str, str], from_date: Optional[datetime] = None) -> str:
     params = {"q": keyword}
+    when = _build_when_param(from_date)
+    if when:
+        params["when"] = when
     params.update(locale)
     return f"{GOOGLE_NEWS_RSS_SEARCH_URL}?{urlencode(params)}"
 
@@ -323,7 +342,7 @@ async def scrape_rss(
                 keyword_seen_links: set[str] = set()
 
                 for locale_label, locale in locale_attempts:
-                    rss_url = _build_rss_url(keyword, locale)
+                    rss_url = _build_rss_url(keyword, locale, from_date=explicit_cutoff)
                     headers = get_default_headers()
                     headers["Accept"] = RSS_ACCEPT_HEADER
 
