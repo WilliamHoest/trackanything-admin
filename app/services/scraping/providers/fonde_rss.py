@@ -66,6 +66,10 @@ async def _fetch_feed(
 ) -> Optional[feedparser.FeedParserDict]:
     headers = get_default_headers()
     headers["Accept"] = RSS_ACCEPT_HEADER
+    # Remove Accept-Encoding so httpx handles decompression automatically.
+    # Manually setting it disables httpx's transparent gzip decompression,
+    # causing feedparser to receive raw compressed bytes.
+    headers.pop("Accept-Encoding", None)
     try:
         response = await fetch_with_retry(
             client,

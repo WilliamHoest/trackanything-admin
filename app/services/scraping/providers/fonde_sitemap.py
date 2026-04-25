@@ -87,6 +87,7 @@ async def _fetch_sitemap(
 ) -> List[Tuple[str, Optional[datetime], Optional[str]]]:
     headers = get_default_headers()
     headers["Accept"] = "application/xml, text/xml, */*"
+    headers.pop("Accept-Encoding", None)
     try:
         response = await fetch_with_retry(
             client,
@@ -197,7 +198,10 @@ async def scrape_fonde_sitemap(
                 if published_dt is not None and published_dt < since:
                     continue
 
-                if patterns and keyword_match_score(patterns, f"{title}\n{text}") < 1:
+                # Include URL path in match text — slugs carry keyword signal
+                # when trafilatura fails to extract article content.
+                url_slug = url.replace("-", " ").replace("/", " ")
+                if patterns and keyword_match_score(patterns, f"{title}\n{text}\n{url_slug}") < 1:
                     continue
 
                 if url in seen_links:
