@@ -265,11 +265,13 @@ async def fetch_all_mentions(
         _run_log(scrape_run_id, "Danskefonde provider disabled by config", logging.INFO)
 
     if settings.scraping_provider_folketing_enabled:
+        folketing_min_date = datetime.now(timezone.utc) - timedelta(days=settings.folketing_lookback_days)
+        folketing_from = min(from_date, folketing_min_date) if from_date else folketing_min_date
         enabled_providers.append(
             (
                 "folketing",
                 "Folketing",
-                scrape_folketing(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id, allowed_languages=allowed_languages),
+                scrape_folketing(sanitized_keywords, from_date=folketing_from, scrape_run_id=scrape_run_id, allowed_languages=allowed_languages),
             )
         )
     else:
@@ -348,6 +350,10 @@ async def fetch_all_mentions(
     date_filter_removed_missing_or_unparseable = 0
     date_filter_removed_before_cutoff = 0
     for mention in all_mentions:
+        if mention.get("bypass_date_filter"):
+            interval_filtered_mentions.append(mention)
+            continue
+
         raw_date = mention.get("published_parsed") or mention.get("date")
         parsed_dt = parse_mention_date(raw_date)
         mention_link = mention.get("link", "no-link")

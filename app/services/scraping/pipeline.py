@@ -298,7 +298,10 @@ async def process_brand_scrape(
                         best_topic_matches = topic_matches
 
                 if best_topic_score < settings.scraping_min_keyword_matches:
-                    continue  # Drop mention — insufficient keyword matches, no fallback
+                    if mention.get("trusted_source") and active_topics:
+                        best_topic = active_topics[0]
+                    else:
+                        continue
 
                 primary_keyword_id = None
                 if best_topic_matches:

@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import feedparser
 import httpx
@@ -18,12 +18,13 @@ from app.services.scraping.core.text_processing import (
 logger = logging.getLogger("scraping")
 
 # Danish foundation-specific RSS feeds
-FONDE_RSS_FEEDS: Dict[str, str] = {
-    "Filantropi.dk": "https://filantropi.dk/feed/",
-    "Impactinsider.dk": "https://impactinsider.dk/feed/",
-    "Fundats.dk": "https://fundats.dk/feed/",
-    "Altinget Fonde": "https://www.altinget.dk/fonde/rss",
-}
+# trusted=True: niche fonde-only sources — keyword matching skipped, all articles saved
+FONDE_RSS_FEEDS: List[Tuple[str, str, bool]] = [
+    ("Filantropi.dk", "https://filantropi.dk/feed/", True),
+    ("Impactinsider.dk", "https://impactinsider.dk/feed/", True),
+    ("Fundats.dk", "https://fundats.dk/feed/", True),
+    ("Altinget Fonde", "https://www.altinget.dk/fonde/rss", False),
+]
 
 RSS_ACCEPT_HEADER = "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.5"
 
@@ -58,30 +59,49 @@ def _strip_html(text: str) -> str:
         return text
 
 
-async def _fetch_feed(
-    client: httpx.AsyncClient,
-    platform: str,
-    rss_url: str,
-    scrape_run_id: Optional[str] = None,
-) -> Optional[feedparser.FeedParserDict]:
+def _rss_headers() -> dict:
     headers = get_default_headers()
     headers["Accept"] = RSS_ACCEPT_HEADER
     # Remove Accept-Encoding so httpx handles decompression automatically.
     # Manually setting it disables httpx's transparent gzip decompression,
     # causing feedparser to receive raw compressed bytes.
     headers.pop("Accept-Encoding", None)
+    return headers
+
+
+async def _fetch_feed(
+    platform: str,
+    rss_url: str,
+    scrape_run_id: Optional[str] = None,
+) -> Optional[feedparser.FeedParserDict]:
+    headers = _rss_headers()
     try:
-        response = await fetch_with_retry(
-            client,
-            rss_url,
-            rate_profile="rss",
-            metrics_provider="fonde_rss",
-            headers=headers,
-        )
+        async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+            response = await fetch_with_retry(
+                client,
+                rss_url,
+                rate_profile="rss",
+                metrics_provider="fonde_rss",
+                headers=headers,
+            )
         feed = await asyncio.to_thread(feedparser.parse, response.content)
         entry_count = len(getattr(feed, "entries", []))
         _log(scrape_run_id, f"{platform}: fetched {entry_count} entries", logging.DEBUG)
         return feed
+    except httpx.RemoteProtocolError:
+        # Small hosting servers sometimes disconnect under parallel load — retry solo after pause
+        _log(scrape_run_id, f"{platform}: RemoteProtocolError, retrying solo in 2s", logging.DEBUG)
+        await asyncio.sleep(2)
+        try:
+            async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+                response = await client.get(rss_url, headers=_rss_headers(), follow_redirects=True)
+            feed = await asyncio.to_thread(feedparser.parse, response.content)
+            entry_count = len(getattr(feed, "entries", []))
+            _log(scrape_run_id, f"{platform}: retry ok, fetched {entry_count} entries", logging.DEBUG)
+            return feed
+        except Exception as exc:
+            _log(scrape_run_id, f"{platform}: fetch failed after retry ({type(exc).__name__}: {exc})", logging.WARNING)
+            return None
     except Exception as exc:
         _log(scrape_run_id, f"{platform}: fetch failed ({type(exc).__name__}: {exc})", logging.WARNING)
         return None
@@ -104,16 +124,15 @@ async def scrape_fonde_rss(
 
     _log(scrape_run_id, f"Fetching {len(FONDE_RSS_FEEDS)} feeds with {len(keywords)} keywords, since={since.isoformat()}")
 
-    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-        feed_results = await asyncio.gather(
-            *[
-                _fetch_feed(client, platform, url, scrape_run_id)
-                for platform, url in FONDE_RSS_FEEDS.items()
-            ],
-            return_exceptions=True,
-        )
+    feed_results = await asyncio.gather(
+        *[
+            _fetch_feed(platform, url, scrape_run_id)
+            for platform, url, _ in FONDE_RSS_FEEDS
+        ],
+        return_exceptions=True,
+    )
 
-    for (platform, _), feed in zip(FONDE_RSS_FEEDS.items(), feed_results):
+    for (platform, _, trusted), feed in zip(FONDE_RSS_FEEDS, feed_results):
         if feed is None or isinstance(feed, Exception):
             continue
 
@@ -134,7 +153,7 @@ async def scrape_fonde_rss(
                 title = entry.get("title", "").strip()
                 summary = _strip_html(entry.get("summary", ""))
 
-                if patterns and keyword_match_score(patterns, f"{title}\n{summary}") < 1:
+                if not trusted and patterns and keyword_match_score(patterns, f"{title}\n{summary}") < 1:
                     continue
 
                 link = _extract_link(entry)
@@ -148,6 +167,7 @@ async def scrape_fonde_rss(
                     "content_teaser": summary[:200],
                     "platform": platform,
                     "published_parsed": published_dt.timetuple(),
+                    "trusted_source": trusted,
                 })
                 kept += 1
 

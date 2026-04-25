@@ -80,10 +80,11 @@ async def _fetch_article(page, semaphore: asyncio.Semaphore, url: str, scrape_ru
             )
             if not result:
                 return None
+            doc = result.as_dict() if hasattr(result, "as_dict") else result
             return {
-                "title": result.get("title", ""),
-                "text": result.get("text", ""),
-                "date": result.get("date"),
+                "title": doc.get("title") or "",
+                "text": doc.get("text") or "",
+                "date": doc.get("date"),
                 "url": url,
             }
         except Exception as exc:

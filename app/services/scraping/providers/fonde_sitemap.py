@@ -17,17 +17,20 @@ from app.services.scraping.core.text_processing import (
 
 logger = logging.getLogger("scraping")
 
-# (platform_name, sitemap_url, url_must_contain)
-FONDE_SITEMAP_SOURCES: List[Tuple[str, str, Optional[str]]] = [
+# (platform_name, sitemap_url, url_must_contain, trusted)
+# trusted=True: niche fonde-only sources — keyword matching skipped, all articles saved
+FONDE_SITEMAP_SOURCES: List[Tuple[str, str, Optional[str], bool]] = [
     (
         "Fondenesvidenscenter.dk",
         "https://fondenesvidenscenter.dk/news-sitemap.xml",
         None,
+        True,
     ),
     (
         "Godfondsledelse.dk",
         "https://godfondsledelse.dk/sitemap.xml",
         "/nyheder",
+        True,
     ),
 ]
 
@@ -133,10 +136,11 @@ async def _fetch_and_extract(
             if not result:
                 return None
 
+            doc = result.as_dict() if hasattr(result, "as_dict") else result
             return {
-                "title": result.get("title", ""),
-                "text": result.get("text", ""),
-                "date": result.get("date"),
+                "title": doc.get("title") or "",
+                "text": doc.get("text") or "",
+                "date": doc.get("date"),
             }
         except Exception as exc:
             _log(scrape_run_id, f"Article fetch failed for {url}: {exc}", logging.DEBUG)
@@ -161,7 +165,7 @@ async def scrape_fonde_sitemap(
     _log(scrape_run_id, f"Fetching {len(FONDE_SITEMAP_SOURCES)} sitemaps, since={since.isoformat()}")
 
     async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-        for platform, sitemap_url, url_filter in FONDE_SITEMAP_SOURCES:
+        for platform, sitemap_url, url_filter, trusted in FONDE_SITEMAP_SOURCES:
             entries = await _fetch_sitemap(client, platform, sitemap_url, scrape_run_id)
 
             # Filter by URL pattern and date
@@ -198,11 +202,10 @@ async def scrape_fonde_sitemap(
                 if published_dt is not None and published_dt < since:
                     continue
 
-                # Include URL path in match text — slugs carry keyword signal
-                # when trafilatura fails to extract article content.
-                url_slug = url.replace("-", " ").replace("/", " ")
-                if patterns and keyword_match_score(patterns, f"{title}\n{text}\n{url_slug}") < 1:
-                    continue
+                if not trusted:
+                    url_slug = url.replace("-", " ").replace("/", " ")
+                    if patterns and keyword_match_score(patterns, f"{title}\n{text}\n{url_slug}") < 1:
+                        continue
 
                 if url in seen_links:
                     continue
@@ -214,6 +217,7 @@ async def scrape_fonde_sitemap(
                     "content_teaser": text[:200].strip(),
                     "platform": platform,
                     "published_parsed": published_dt.timetuple() if published_dt else None,
+                    "trusted_source": trusted,
                 })
                 kept += 1
 

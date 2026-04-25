@@ -239,6 +239,8 @@ async def scrape_folketing(
                         "content_teaser": resume_str[:300] if resume_str else f"Sag behandlet i {navn}",
                         "platform": f"Folketing - {label}",
                         "published_parsed": published_dt.timetuple() if published_dt else None,
+                        "bypass_date_filter": True,
+                        "trusted_source": True,
                     })
                     kept += 1
 

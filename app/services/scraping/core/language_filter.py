@@ -25,6 +25,10 @@ def filter_by_language(
 
     kept, removed = [], 0
     for mention in mentions:
+        if mention.get("trusted_source"):
+            kept.append(mention)  # niche fonde/folketing source — inherently Danish
+            continue
+
         title = (mention.get("title") or "").strip()
         if len(title) < 15:
             kept.append(mention)  # too short to detect reliably — keep
