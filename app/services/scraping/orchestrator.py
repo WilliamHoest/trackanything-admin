@@ -12,6 +12,7 @@ from app.services.scraping.providers.rss import scrape_rss
 from app.services.scraping.providers.fonde_rss import scrape_fonde_rss
 from app.services.scraping.providers.fonde_sitemap import scrape_fonde_sitemap
 from app.services.scraping.providers.danskefonde import scrape_danskefonde
+from app.services.scraping.providers.folketing import scrape_folketing
 from app.services.scraping.core.date_utils import parse_mention_date, is_within_interval
 from app.services.scraping.core.text_processing import (
     normalize_url,
@@ -122,6 +123,7 @@ async def fetch_all_mentions(
         "serpapi": settings.scraping_provider_serpapi_enabled,
         "configurable": settings.scraping_provider_configurable_enabled,
         "rss": settings.scraping_provider_rss_enabled,
+        "folketing": settings.scraping_provider_folketing_enabled,
     }
     _run_log(
         scrape_run_id,
@@ -130,7 +132,8 @@ async def fetch_all_mentions(
             f"gnews={provider_toggles['gnews']}, "
             f"serpapi={provider_toggles['serpapi']}, "
             f"configurable={provider_toggles['configurable']}, "
-            f"rss={provider_toggles['rss']}"
+            f"rss={provider_toggles['rss']}, "
+            f"folketing={provider_toggles['folketing']}"
         ),
     )
     write_run_metadata(
@@ -260,6 +263,18 @@ async def fetch_all_mentions(
     else:
         observe_guardrail_event("provider_toggle", "danskefonde", "disabled")
         _run_log(scrape_run_id, "Danskefonde provider disabled by config", logging.INFO)
+
+    if settings.scraping_provider_folketing_enabled:
+        enabled_providers.append(
+            (
+                "folketing",
+                "Folketing",
+                scrape_folketing(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id, allowed_languages=allowed_languages),
+            )
+        )
+    else:
+        observe_guardrail_event("provider_toggle", "folketing", "disabled")
+        _run_log(scrape_run_id, "Folketing provider disabled by config", logging.INFO)
 
     if not enabled_providers:
         _run_log(scrape_run_id, "All providers are disabled by config; skipping scrape run", logging.WARNING)
