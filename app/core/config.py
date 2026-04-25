@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     scraping_provider_serpapi_enabled: bool = True
     scraping_provider_configurable_enabled: bool = True
     scraping_provider_rss_enabled: bool = True
+    scraping_provider_fonde_rss_enabled: bool = True
+    scraping_provider_fonde_sitemap_enabled: bool = True
+    scraping_provider_danskefonde_enabled: bool = True
     scraping_use_scrapling: bool = False
     scraping_stealthy_fetcher_enabled: bool = False
     scraping_adaptive_selector_enabled: bool = False

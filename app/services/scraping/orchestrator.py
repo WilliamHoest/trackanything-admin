@@ -9,6 +9,9 @@ from app.services.scraping.providers.gnews import scrape_gnews
 from app.services.scraping.providers.serpapi import scrape_serpapi
 from app.services.scraping.providers.configurable import scrape_configurable_sources
 from app.services.scraping.providers.rss import scrape_rss
+from app.services.scraping.providers.fonde_rss import scrape_fonde_rss
+from app.services.scraping.providers.fonde_sitemap import scrape_fonde_sitemap
+from app.services.scraping.providers.danskefonde import scrape_danskefonde
 from app.services.scraping.core.date_utils import parse_mention_date, is_within_interval
 from app.services.scraping.core.text_processing import (
     normalize_url,
@@ -222,6 +225,42 @@ async def fetch_all_mentions(
         observe_guardrail_event("provider_toggle", "rss", "disabled")
         _run_log(scrape_run_id, "RSS provider disabled by config", logging.INFO)
 
+    if settings.scraping_provider_fonde_rss_enabled:
+        enabled_providers.append(
+            (
+                "fonde_rss",
+                "Fonde RSS",
+                scrape_fonde_rss(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id, allowed_languages=allowed_languages),
+            )
+        )
+    else:
+        observe_guardrail_event("provider_toggle", "fonde_rss", "disabled")
+        _run_log(scrape_run_id, "Fonde RSS provider disabled by config", logging.INFO)
+
+    if settings.scraping_provider_fonde_sitemap_enabled:
+        enabled_providers.append(
+            (
+                "fonde_sitemap",
+                "Fonde Sitemap",
+                scrape_fonde_sitemap(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id, allowed_languages=allowed_languages),
+            )
+        )
+    else:
+        observe_guardrail_event("provider_toggle", "fonde_sitemap", "disabled")
+        _run_log(scrape_run_id, "Fonde Sitemap provider disabled by config", logging.INFO)
+
+    if settings.scraping_provider_danskefonde_enabled:
+        enabled_providers.append(
+            (
+                "danskefonde",
+                "Danskefonde.org",
+                scrape_danskefonde(sanitized_keywords, from_date=from_date, scrape_run_id=scrape_run_id, allowed_languages=allowed_languages),
+            )
+        )
+    else:
+        observe_guardrail_event("provider_toggle", "danskefonde", "disabled")
+        _run_log(scrape_run_id, "Danskefonde provider disabled by config", logging.INFO)
+
     if not enabled_providers:
         _run_log(scrape_run_id, "All providers are disabled by config; skipping scrape run", logging.WARNING)
         observe_guardrail_event("provider_toggle", "orchestrator", "all_disabled")
@@ -312,10 +351,11 @@ async def fetch_all_mentions(
                 ),
                 logging.DEBUG,
             )
-            # Strict guardrail: require a parseable date when interval filtering is active.
+            # Soft date filter: keep articles with missing dates rather than dropping them.
+            # Niche sites often lack date metadata — missing != old.
             if parsed_dt is None:
-                _run_log(scrape_run_id, f"Global date filter skipped {mention_link}: unparseable/missing date", logging.DEBUG)
-                date_filter_removed_missing_or_unparseable += 1
+                _run_log(scrape_run_id, f"Global date filter: keeping {mention_link} (no date found)", logging.DEBUG)
+                interval_filtered_mentions.append(mention)
                 continue
             if not within_interval:
                 _run_log(scrape_run_id, f"Global date filter skipped {mention_link}: before cutoff", logging.DEBUG)

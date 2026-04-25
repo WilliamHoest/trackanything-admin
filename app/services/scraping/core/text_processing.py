@@ -108,9 +108,15 @@ def chunk_or_queries(
     return chunks
 
 
+_DA_SUFFIX = r"(?:s|en|et|erne|ens)?"
+
+
 def _keyword_to_regex(keyword: str) -> re.Pattern | None:
     """
-    Build one phrase regex per keyword (no single-word splitting logic).
+    Build one phrase regex per keyword with Danish morphology support.
+
+    Handles genitive (-s) and definite article (-en/-et/-erne/-ens) suffixes
+    so "Carlsberg Fond" matches "Carlsbergs Fond" and "Carlsberg-Fonden".
     """
     cleaned = sanitize_search_input(keyword)
     if not cleaned:
@@ -120,9 +126,14 @@ def _keyword_to_regex(keyword: str) -> re.Pattern | None:
     if not tokens:
         return None
 
-    # Allow punctuation/whitespace between phrase tokens so both
-    # "danskefonde.dk" and "danskefonde dk" can match.
-    phrase = r"[\s\W_]+".join(tokens)
+    token_patterns = []
+    for i, token in enumerate(tokens):
+        if i < len(tokens) - 1:
+            token_patterns.append(f"{token}s?")  # genitive between tokens
+        else:
+            token_patterns.append(f"{token}{_DA_SUFFIX}")  # full suffixes at end
+
+    phrase = r"[\s\W_]+".join(token_patterns)
     pattern = rf"(?<!\w){phrase}(?!\w)"
     return re.compile(pattern, re.IGNORECASE)
 

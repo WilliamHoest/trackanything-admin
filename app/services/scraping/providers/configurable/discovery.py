@@ -15,7 +15,8 @@ from app.services.scraping.core.text_processing import normalize_url
 from .config import _is_same_or_subdomain, _log, _normalize_domain
 
 ARTICLE_DATE_PATH_PATTERN = re.compile(r"/20\d{2}/\d{2}/\d{2}/")
-ARTICLE_ID_PATH_PATTERN = re.compile(r"(?:article|art)\d{5,}|/\d{6,}(?:[./-]|$)", re.IGNORECASE)
+ARTICLE_ID_PATH_PATTERN = re.compile(r"(?:article|art)\d{3,}|/\d{4,}(?:[./-]|$)", re.IGNORECASE)
+NUMERIC_ID_PATH_PATTERN = re.compile(r"/\d{3,}(?:[/]|$)")
 LONG_SLUG_SEGMENT_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+){2,}$", re.IGNORECASE)
 NON_ARTICLE_EXTENSIONS = (
     ".jpg",
@@ -61,7 +62,7 @@ NON_ARTICLE_PATH_SEGMENTS = {
 
 
 def _is_likely_article_slug(segment: str) -> bool:
-    if len(segment) < 20:
+    if len(segment) < 12:
         return False
     return bool(LONG_SLUG_SEGMENT_PATTERN.match(segment))
 
@@ -86,8 +87,9 @@ def _is_candidate_article_url(url: str, source_domain: str) -> bool:
 
     has_date_path = bool(ARTICLE_DATE_PATH_PATTERN.search(normalized_path + "/"))
     has_article_id = bool(ARTICLE_ID_PATH_PATTERN.search(normalized_path))
+    has_numeric_id = bool(NUMERIC_ID_PATH_PATTERN.search(normalized_path))
     has_slug_signal = any(_is_likely_article_slug(segment) for segment in segments)
-    has_article_signal = has_date_path or has_article_id or has_slug_signal
+    has_article_signal = has_date_path or has_article_id or has_numeric_id or has_slug_signal
     if not has_article_signal:
         return False
 
