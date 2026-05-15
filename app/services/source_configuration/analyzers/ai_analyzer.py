@@ -68,7 +68,7 @@ Return ONLY JSON: {\"is_valid\": true/false}"""
             user_prompt = f"Analyze:\n{clean_text[:500]}"
 
             response = await client.chat.completions.create(
-                model="deepseek-chat",
+                model=settings.deepseek_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
@@ -211,7 +211,7 @@ Look for <form action=\"...\"> or <input name=\"q\">
 Return ONLY JSON: {\"search_url_pattern\": \"https://domain.com/search?q={keyword}\"} OR null."""
 
             response = await client.chat.completions.create(
-                model="deepseek-chat",
+                model=settings.deepseek_model,
                 messages=[
                     {"role": "system", "content": search_prompt},
                     {"role": "user", "content": homepage_html[:20000]}  # Increased from 8000 to 20000

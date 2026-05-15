@@ -7,6 +7,8 @@ from app.schemas.ai_setup import (
     AISaveSetupRequest,
 )
 from app.schemas.brand import BrandCreate
+from app.schemas.topic import TopicCreate
+from app.schemas.keyword import KeywordCreate
 from app.security.auth import get_current_user
 from app.core.supabase_db import get_supabase_crud
 from app.crud.supabase_crud import SupabaseCRUD

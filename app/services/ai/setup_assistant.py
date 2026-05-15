@@ -44,7 +44,7 @@ async def generate_setup(brand_name: str, description: str) -> List[AISetupTopic
     user_prompt = f"Brand: {brand_name}\nBeskrivelse: {description}"
 
     response = await client.chat.completions.create(
-        model="deepseek-chat",
+        model=settings.deepseek_model,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},

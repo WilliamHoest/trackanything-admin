@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     supabase_key: SecretStr
     supabase_service_role_key: SecretStr  # Needed for admin operations (creating users)
     deepseek_api_key: SecretStr
-    deepseek_model: str = "deepseek-chat"  # DeepSeek V3 model for relevance filtering
+    deepseek_model: str = "deepseek-v4-pro"
     gnews_api_key: SecretStr
     gnews_max_results: int = 10
     serpapi_key: SecretStr

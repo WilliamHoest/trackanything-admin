@@ -84,6 +84,15 @@ class SupabaseCRUD:
             print(f"Error getting active brands for scheduling: {e}")
             return []
 
+    async def get_all_brands(self) -> List[Dict[str, Any]]:
+        """Get all brands. Intended for admin-level views."""
+        try:
+            result = self.supabase.table("brands").select("*").order("created_at", desc=True).execute()
+            return result.data or []
+        except Exception as e:
+            print(f"Error getting all brands: {e}")
+            return []
+
     async def create_brand(self, brand: brand_schemas.BrandCreate, profile_id: uuid.UUID) -> Optional[Dict[str, Any]]:
         """Create new brand"""
         try:
@@ -889,6 +898,84 @@ class SupabaseCRUD:
             return result.data or []
         except Exception as e:
             print(f"Error getting unsent mentions: {e}")
+            return []
+
+    async def get_mentions_for_digest_window(
+        self,
+        brand_id: int,
+        window_start: datetime,
+        window_end: datetime,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Get mentions for a brand in a scrape/digest window."""
+        try:
+            result = (
+                self.supabase.table("mentions")
+                .select(
+                    """
+                    id, caption, content_teaser, post_link, published_at, created_at,
+                    topics(id, name), platforms(id, name)
+                    """
+                )
+                .eq("brand_id", brand_id)
+                .gte("created_at", window_start.isoformat())
+                .lte("created_at", window_end.isoformat())
+                .order("created_at", desc=True)
+                .limit(max(1, min(int(limit), 250)))
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            print(f"Error getting digest window mentions: {e}")
+            return []
+
+    async def get_mentions_by_ids_for_digest(
+        self,
+        brand_id: int,
+        mention_ids: List[int],
+        limit: int = 120,
+    ) -> List[Dict[str, Any]]:
+        """Get explicit mention IDs for deterministic digest generation."""
+        if not mention_ids:
+            return []
+        safe_ids = [int(mention_id) for mention_id in mention_ids[: max(1, min(int(limit), 250))]]
+        try:
+            result = (
+                self.supabase.table("mentions")
+                .select(
+                    """
+                    id, caption, content_teaser, post_link, published_at, created_at,
+                    topics(id, name), platforms(id, name)
+                    """
+                )
+                .eq("brand_id", brand_id)
+                .in_("id", safe_ids)
+                .order("created_at", desc=True)
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            print(f"Error getting digest mentions by ids: {e}")
+            return []
+
+    async def get_recent_mention_batch_timestamps(
+        self,
+        brand_id: int,
+        limit: int = 500,
+    ) -> List[Dict[str, Any]]:
+        """Fetch recent mention timestamps for deriving digest batches."""
+        try:
+            result = (
+                self.supabase.table("mentions")
+                .select("id, created_at")
+                .eq("brand_id", brand_id)
+                .order("created_at", desc=True)
+                .limit(max(1, min(int(limit), 1000)))
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            print(f"Error getting recent mention batch timestamps: {e}")
             return []
 
     async def mark_mentions_as_sent(self, mention_ids: List[int]) -> bool:
